@@ -19,7 +19,7 @@ Key features:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/sirv-integration-pipeline.git
+git clone https://github.com/manveerchauhan/sirv-integration-pipeline.git
 cd sirv-integration-pipeline
 
 # Install dependencies
@@ -174,39 +174,3 @@ target_len = 1000  # Fixed length in bp
 # Or use a different distribution model
 target_len = np.random.normal(1000, 200)  # Normal distribution
 ```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **minimap2 not found**: Ensure minimap2 is installed and in your PATH
-   ```bash
-   which minimap2
-   ```
-
-2. **Memory errors during alignment**: Reduce the number of threads or use a machine with more RAM
-   ```bash
-   --threads 2
-   ```
-
-3. **SIRV reads not being detected**: Check that your SIRV reference and GTF files match the SIRVs used
-   ```bash
-   # Validate GTF format
-   grep "transcript_id" sirv_annotation.gtf | head
-   ```
-
-## Citation
-
-If you use this pipeline in your research, please cite:
-
-```
-Author, A. (2025). SIRV Integration Pipeline for Long-Read scRNA-seq. GitHub repository.
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contact
-
-For questions or support, please open an issue on the GitHub repository or contact [your-email@example.com].
