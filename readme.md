@@ -94,7 +94,7 @@ python sirv_pipeline.py \
 
 ### 1. Map SIRV reads to reference
 
-The pipeline first maps the SIRV reads to the SIRV reference genome using minimap2 with settings optimized for ONT data. This step identifies which transcript each SIRV read represents.
+The pipeline first maps the SIRV reads to the SIRV reference genome using minimap2 with settings optimised for ONT data. This step identifies which transcript each SIRV read represents.
 
 ```
 minimap2 -ax map-ont -k 14 --secondary=no -t <threads> <sirv_reference> <sirv_fastq>
@@ -113,7 +113,7 @@ The output is saved as `transcript_map.csv` with columns:
 The pipeline integrates SIRV reads into the existing scRNA-seq dataset:
 1. Examines the scRNA-seq data to determine cell barcodes and read counts
 2. Samples SIRV read length distribution to create realistic truncation profiles
-3. For each cell, adds ~1% SIRV reads (customizable with `--insertion_rate`)
+3. For each cell, adds ~1% SIRV reads (customisable with `--insertion_rate`)
 4. Adds cell barcodes and UMIs to SIRV reads
 5. Truncates reads to match realistic ONT read lengths
 6. Combines modified SIRV reads with original dataset
@@ -152,20 +152,32 @@ The comparison results are saved to `comparison.csv` with columns:
 | `expected_counts.csv` | Expected transcript counts | barcode, sirv_transcript, expected_count |
 | `comparison.csv` | Comparison with FLAMES results | barcode, sirv_transcript, expected_count, observed_count, detected, detection_rate |
 
-## Customization
+## Customisation
+### Adjusting the SIRV Insertion Rate
 
-### Adding UMIs with Different Formats
+The insertion rate (set with `--insertion_rate`) determines what percentage of each cell's reads will be SIRV spike-in reads. By default, this is set to 0.01 (1%), which means for a cell with 1000 reads, 10 SIRV reads will be added.
 
-If your scRNA-seq data uses a different UMI/barcode format, modify the `add_sirv_to_dataset()` function:
+You can adjust this rate for different experimental scenarios:
 
-```python
-# Generate a custom format barcode+UMI
-new_id = f"{read_id}-{custom_barcode_format}-{custom_umi_format}"
+```bash
+# For lower detection limit testing (0.1%)
+python sirv_pipeline.py --insertion_rate 0.001 ...
+
+# For higher abundance testing (5%)
+python sirv_pipeline.py --insertion_rate 0.05 ...
+
+# For differential expression simulation (varying rates)
+python sirv_pipeline.py --insertion_rate 0.02 ...
 ```
+
+Considerations when setting the insertion rate:
+- **Too low** (<0.1%): May be difficult to detect transcripts reliably
+- **Too high** (>10%): May overwhelm the biological signal from the original dataset
+- **Realistic** (0.5-2%): Mimics typical spike-in concentrations used in experiments
 
 ### Adjusting Read Truncation
 
-To customize how read truncation works:
+To customise how read truncation works:
 
 ```python
 # Set a fixed length instead of sampling from distribution
