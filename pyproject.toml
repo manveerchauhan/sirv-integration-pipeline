@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sirv-integration-pipeline"
+version = "0.1.0"
+description = "A pipeline for integrating SIRV reads into scRNA-seq data"
+readme = "README.md"
+authors = [
+    {name = "Manveer Chauhan", email = "mschauhan@student.unimelb.edu.au"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.19.0",
+    "pandas>=1.1.0",
+    "pysam>=0.16.0",
+    "biopython>=1.78",
+    "matplotlib>=3.3.0",
+    "jinja2>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/manveerchauhan/sirv-integration-pipeline"
+"Bug Tracker" = "https://github.com/manveerchauhan/sirv-integration-pipeline/issues"
+
+[project.scripts]
+sirv-pipeline = "sirv_pipeline.__main__:main"
+
+[tool.setuptools]
+packages = ["sirv_pipeline"]
+
+[tool.black]
+line-length = 88
+target-version = ["py37", "py38", "py39"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
