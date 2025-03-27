@@ -2,8 +2,6 @@
 
 A pipeline for integrating SIRV spike-in reads into existing scRNA-seq datasets to benchmark isoform discovery tools.
 
-![Pipeline Overview](pipeline_overview.png)
-
 ## Overview
 
 This pipeline allows you to create semi-synthetic benchmarking datasets by adding SIRV (Spike-In RNA Variant) reads to an existing single-cell RNA-seq dataset. The primary purpose is to evaluate transcript discovery and quantification tools like FLAMES by providing a ground truth of known transcripts at controlled abundances.
@@ -180,3 +178,6 @@ If you use SIRV Integration Pipeline in your research, please cite:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 Feel free to contact me for questions/suggestions: mschauhan@student.unimelb.edu.au
+
+## Pipeline Schematic [WIP]
+![Pipeline Schematic](pipeline_overview.png)
