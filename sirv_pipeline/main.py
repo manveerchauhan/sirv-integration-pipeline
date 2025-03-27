@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     
     # Optional arguments
     optional = parser.add_argument_group('Optional Arguments')
+    optional.add_argument('--reference_transcriptome', 
+                       help='Reference transcriptome (for coverage modeling)')
     optional.add_argument('--flames_output', 
                        help='FLAMES output for comparison')
     optional.add_argument('--insertion_rate', type=float, default=0.01, 
@@ -57,10 +59,14 @@ def parse_args() -> argparse.Namespace:
                        help='Log file path (defaults to output_dir/pipeline.log)')
     optional.add_argument('--min_overlap', type=float, default=0.5,
                        help='Minimum overlap for transcript assignment')
+    optional.add_argument('--sample_size', type=int, default=1000,
+                       help='Number of reads to sample for modeling')
     optional.add_argument('--seed', type=int,
                        help='Random seed for reproducibility')
     optional.add_argument('--keep_temp', action='store_true',
                        help='Keep temporary files')
+    optional.add_argument('--no_coverage_bias', action='store_true',
+                       help='Disable 5\'-3\' coverage bias modeling')
     optional.add_argument('--verbose', action='store_true',
                        help='Enable verbose logging')
     optional.add_argument('--quiet', action='store_true',
@@ -140,6 +146,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
             insertion_rate=args.insertion_rate,
             tracking_file=tracking_file,
             expected_file=expected_file,
+            sample_size=args.sample_size,
+            reference_file=args.reference_transcriptome,
+            model_coverage_bias=not args.no_coverage_bias,
             seed=args.seed
         )
         

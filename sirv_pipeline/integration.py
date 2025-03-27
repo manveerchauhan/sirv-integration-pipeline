@@ -14,6 +14,10 @@ import pandas as pd
 import gzip
 from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Any
+import subprocess
+
+# Import the coverage bias model
+from sirv_pipeline.coverage_bias import CoverageBiasModel
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -192,6 +196,55 @@ def extract_cell_info(sc_fastq: str) -> Dict[str, int]:
     return cell_info
 
 
+def create_alignment_for_coverage_modeling(fastq_file: str, reference_file: str, output_bam: str, threads: int = 4) -> bool:
+    """
+    Create alignment file for modeling coverage bias.
+    
+    Args:
+        fastq_file: Path to FASTQ file
+        reference_file: Path to reference transcriptome
+        output_bam: Path to output BAM file
+        threads: Number of threads to use
+        
+    Returns:
+        bool: True if alignment was successful
+    """
+    logger.info(f"Creating alignment for coverage modeling...")
+    
+    try:
+        # Run minimap2 alignment
+        sam_file = output_bam.replace('.bam', '.sam')
+        
+        # Determine preset based on file naming convention
+        preset = "map-ont" if "ont" in os.path.basename(fastq_file).lower() else "map-pb"
+        
+        cmd = [
+            "minimap2", "-ax", preset, "-t", str(threads),
+            "--secondary=no", reference_file, fastq_file
+        ]
+        
+        with open(sam_file, 'w') as f:
+            subprocess.run(cmd, stdout=f, check=True)
+        
+        # Convert SAM to sorted BAM
+        sort_cmd = ["samtools", "sort", "-o", output_bam, sam_file]
+        subprocess.run(sort_cmd, check=True)
+        
+        # Index BAM
+        index_cmd = ["samtools", "index", output_bam]
+        subprocess.run(index_cmd, check=True)
+        
+        # Remove SAM file
+        os.remove(sam_file)
+        
+        logger.info(f"Alignment created: {output_bam}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating alignment: {e}")
+        return False
+
+
 def add_sirv_to_dataset(
     sirv_fastq: str, 
     sc_fastq: str,
@@ -202,6 +255,8 @@ def add_sirv_to_dataset(
     expected_file: Optional[str] = None,
     umi_length: int = 12,
     sample_size: int = 1000,
+    reference_file: Optional[str] = None,
+    model_coverage_bias: bool = True,
     seed: Optional[int] = None
 ) -> Tuple[str, str, str]:
     """
@@ -217,6 +272,8 @@ def add_sirv_to_dataset(
         expected_file: Path to output expected counts CSV
         umi_length: Length of generated UMIs
         sample_size: Number of reads to sample for length distribution
+        reference_file: Path to reference transcriptome (for coverage modeling)
+        model_coverage_bias: Whether to model 5'-3' coverage bias
         seed: Random seed for reproducibility
         
     Returns:
@@ -269,6 +326,36 @@ def add_sirv_to_dataset(
     length_sampler = ReadLengthSampler()
     length_sampler.sample_from_fastq(sc_fastq, sample_size=sample_size)
     
+    # Initialize coverage bias model if requested
+    coverage_model = None
+    if model_coverage_bias:
+        coverage_model = CoverageBiasModel(seed=seed)
+        
+        # Try to learn coverage bias from alignment if reference is provided
+        if reference_file and os.path.exists(reference_file):
+            # Create a temporary directory
+            temp_dir = os.path.join(os.path.dirname(output_fastq), "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Create alignment BAM
+            temp_bam = os.path.join(temp_dir, "temp_alignment.bam")
+            
+            if create_alignment_for_coverage_modeling(sc_fastq, reference_file, temp_bam):
+                # Learn coverage bias from alignment
+                coverage_model.learn_from_bam(temp_bam, reference_file)
+                
+                # Plot distribution
+                plot_file = os.path.join(os.path.dirname(output_fastq), "coverage_bias.png")
+                coverage_model.plot_distributions(plot_file)
+            else:
+                # Fallback to simplified model
+                logger.warning("Falling back to synthetic coverage bias model")
+                coverage_model.learn_from_fastq(sc_fastq)
+        else:
+            # Use simplified model
+            logger.warning("No reference provided, using synthetic coverage bias model")
+            coverage_model.learn_from_fastq(sc_fastq)
+    
     # Create cell barcode generator
     barcode_gen = CellBarcode(seed=seed)
     
@@ -302,10 +389,19 @@ def add_sirv_to_dataset(
                 # Generate UMI
                 umi = barcode_gen.generate_umi(umi_length)
                 
-                # Truncate to realistic read length
-                target_len = min(length_sampler.sample(), len(sirv['seq']))
-                seq = sirv['seq'][:target_len]
-                qual = sirv['qual'][:target_len]
+                # Get target read length
+                target_len = length_sampler.sample()
+                
+                if coverage_model and coverage_model.has_model:
+                    # Apply coverage bias model to get fragment with realistic 5'-3' bias
+                    seq, qual = coverage_model.apply_to_sequence(
+                        sirv['seq'], sirv['qual'], target_length=target_len
+                    )
+                else:
+                    # Simple truncation to target length
+                    target_len = min(target_len, len(sirv['seq']))
+                    seq = sirv['seq'][:target_len]
+                    qual = sirv['qual'][:target_len]
                 
                 # New read ID with tracking info
                 new_id = f"{read_id}-{barcode}-{umi}"
@@ -319,7 +415,9 @@ def add_sirv_to_dataset(
                     'original_read_id': read_id,
                     'barcode': barcode,
                     'umi': umi,
-                    'sirv_transcript': sirv['transcript']
+                    'sirv_transcript': sirv['transcript'],
+                    'original_length': len(sirv['seq']),
+                    'sampled_length': len(seq)
                 })
         
         # Copy original scRNA-seq reads
