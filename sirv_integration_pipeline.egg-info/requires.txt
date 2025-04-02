@@ -1,0 +1,6 @@
+numpy>=1.19.0
+pandas>=1.1.0
+pysam>=0.16.0
+biopython>=1.78
+matplotlib>=3.3.0
+jinja2>=3.0.0
