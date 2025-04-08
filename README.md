@@ -30,13 +30,13 @@ pip install .
 ## Dependencies
 
 - Python 3.7+
-- numpy, pandas, matplotlib, jinja2, seaborn
+- numpy, pandas, matplotlib, jinja2
 - External tools: minimap2, samtools
 
 You can install the Python dependencies via pip:
 
 ```bash
-pip install numpy pandas matplotlib jinja2 seaborn
+pip install numpy pandas matplotlib jinja2
 ```
 
 For minimap2 and samtools, follow their installation instructions or use conda:
@@ -251,42 +251,39 @@ The following diagram illustrates the key steps in the SIRV Integration Pipeline
 ```mermaid
 flowchart TD
     %% Input files
-    SIRV[SIRV Reads\n(FASTQ/BAM)]:::input
-    SC[scRNA-seq Reads\n(FASTQ)]:::input
+    SIRV["SIRV Reads (FASTQ/BAM)"] 
+    SC["scRNA-seq Reads (FASTQ)"]
     
     %% Processing steps - left branch
-    SIRV --> MAP[Map to SIRV\nReference]:::process
-    MAP --> TRANS[Transcript\nAssignment]:::process
+    SIRV --> MAP["Map to SIRV Reference"]
+    MAP --> TRANS["Transcript Assignment"]
     
     %% Processing steps - right branch
-    SC --> CELL[Extract Cell\nBarcodes & UMIs]:::process
-    CELL --> COV[Model Coverage\nBias]:::process
+    SC --> CELL["Extract Cell Barcodes & UMIs"]
+    CELL --> COV["Model Coverage Bias"]
     
     %% Integration
-    TRANS --> INT[Integrate SIRV Reads with\nCell Barcodes & UMIs]:::process
+    TRANS --> INT["Integrate SIRV Reads with Cell Barcodes & UMIs"]
     COV --> INT
     
     %% Output
-    INT --> COMB[Combined FASTQ with\nGround Truth Tracking]:::output
+    INT --> COMB["Combined FASTQ with Ground Truth Tracking"]
     
     %% Evaluation (optional)
-    COMB --> EVAL[Evaluate with FLAMES\n(Optional)]:::process
-    EVAL --> REPORT[Generate Evaluation\nReports & Visualizations]:::output
+    COMB --> EVAL["Evaluate with FLAMES (Optional)"]
+    EVAL --> REPORT["Generate Evaluation Reports & Visualizations"]
     
-    %% Define styles
-    classDef input fill:#8DD3C7,stroke:#333,stroke-width:2px
-    classDef process fill:#BEBADA,stroke:#333,stroke-width:2px
-    classDef output fill:#FB8072,stroke:#333,stroke-width:2px
-    
-    %% Legend
-    classDef legend fill:none,stroke:none
-    
-    subgraph Legend
-        direction LR
-        L_I[Input]:::input
-        L_P[Process]:::process
-        L_O[Output]:::output
-    end
+    %% Style nodes by type
+    style SIRV fill:#8DD3C7,stroke:#333,stroke-width:2px
+    style SC fill:#8DD3C7,stroke:#333,stroke-width:2px
+    style MAP fill:#BEBADA,stroke:#333,stroke-width:2px
+    style TRANS fill:#BEBADA,stroke:#333,stroke-width:2px
+    style CELL fill:#BEBADA,stroke:#333,stroke-width:2px
+    style COV fill:#BEBADA,stroke:#333,stroke-width:2px
+    style INT fill:#BEBADA,stroke:#333,stroke-width:2px
+    style EVAL fill:#BEBADA,stroke:#333,stroke-width:2px
+    style COMB fill:#FB8072,stroke:#333,stroke-width:2px
+    style REPORT fill:#FB8072,stroke:#333,stroke-width:2px
 ```
 
 The pipeline integrates SIRV reads into scRNA-seq data with proper cell barcodes and UMIs, enabling accurate benchmarking of transcript identification and quantification tools. The coverage bias modeling ensures realistic read characteristics that match the original dataset.
