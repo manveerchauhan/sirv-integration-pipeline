@@ -10,6 +10,7 @@ sirv_integration_pipeline.egg-info/top_level.txt
 sirv_pipeline/__init__.py
 sirv_pipeline/__main__.py
 sirv_pipeline/coverage_bias.py
+sirv_pipeline/diagnostics.py
 sirv_pipeline/evaluation.py
 sirv_pipeline/integration.py
 sirv_pipeline/main.py

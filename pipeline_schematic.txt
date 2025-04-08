@@ -1,0 +1,48 @@
+SIRV Integration Pipeline Workflow
+
+┌─────────────────┐     ┌─────────────────┐
+│  SIRV Reads     │     │  scRNA-seq      │
+│  (FASTQ/BAM)    │     │  Reads (FASTQ)  │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  Map to SIRV    │     │  Extract Cell   │
+│  Reference      │     │  Barcodes/UMIs  │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  Transcript     │     │  Model Coverage │
+│  Assignment     │     │  Bias           │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         └───────────┐ ┌─────────┘
+                     ▼ ▼
+      ┌───────────────────────────────┐
+      │    Integrate SIRV Reads with  │
+      │    Cell Barcodes & UMIs       │
+      └───────────────┬───────────────┘
+                      │
+                      ▼
+      ┌───────────────────────────────┐
+      │    Combined FASTQ with        │
+      │    Ground Truth Tracking      │
+      └───────────────┬───────────────┘
+                      │
+                      ▼
+      ┌───────────────────────────────┐
+      │    Evaluate with FLAMES       │
+      │    (Optional)                 │
+      └───────────────┬───────────────┘
+                      │
+                      ▼
+      ┌───────────────────────────────┐
+      │    Generate Evaluation        │
+      │    Reports & Visualizations   │
+      └───────────────────────────────┘
+
+Legend:
+- Top row: Input files
+- Middle rows: Processing steps
+- Bottom rows: Output files and evaluation 

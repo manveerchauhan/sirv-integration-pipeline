@@ -245,4 +245,48 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 Feel free to contact me for questions/suggestions: mschauhan@student.unimelb.edu.au
 
 ## Pipeline Schematic
-![Pipeline Schematic](pipeline_overview.png)
+
+The following diagram illustrates the key steps in the SIRV Integration Pipeline:
+
+```mermaid
+flowchart TD
+    %% Input files
+    SIRV[SIRV Reads\n(FASTQ/BAM)]:::input
+    SC[scRNA-seq Reads\n(FASTQ)]:::input
+    
+    %% Processing steps - left branch
+    SIRV --> MAP[Map to SIRV\nReference]:::process
+    MAP --> TRANS[Transcript\nAssignment]:::process
+    
+    %% Processing steps - right branch
+    SC --> CELL[Extract Cell\nBarcodes & UMIs]:::process
+    CELL --> COV[Model Coverage\nBias]:::process
+    
+    %% Integration
+    TRANS --> INT[Integrate SIRV Reads with\nCell Barcodes & UMIs]:::process
+    COV --> INT
+    
+    %% Output
+    INT --> COMB[Combined FASTQ with\nGround Truth Tracking]:::output
+    
+    %% Evaluation (optional)
+    COMB --> EVAL[Evaluate with FLAMES\n(Optional)]:::process
+    EVAL --> REPORT[Generate Evaluation\nReports & Visualizations]:::output
+    
+    %% Define styles
+    classDef input fill:#8DD3C7,stroke:#333,stroke-width:2px
+    classDef process fill:#BEBADA,stroke:#333,stroke-width:2px
+    classDef output fill:#FB8072,stroke:#333,stroke-width:2px
+    
+    %% Legend
+    classDef legend fill:none,stroke:none
+    
+    subgraph Legend
+        direction LR
+        L_I[Input]:::input
+        L_P[Process]:::process
+        L_O[Output]:::output
+    end
+```
+
+The pipeline integrates SIRV reads into scRNA-seq data with proper cell barcodes and UMIs, enabling accurate benchmarking of transcript identification and quantification tools. The coverage bias modeling ensures realistic read characteristics that match the original dataset.

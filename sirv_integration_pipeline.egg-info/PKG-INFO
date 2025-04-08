@@ -90,6 +90,24 @@ sirv-pipeline --integration \
     --insertion-rate 0.1
 ```
 
+### Integration Mode with Combined References
+
+You can now provide a non-SIRV reference (e.g., genome reference) to improve coverage modeling, and optionally create a combined reference for downstream analysis:
+
+```bash
+sirv-pipeline --integration \
+    --sirv-fastq sirv_reads.fastq \
+    --sc-fastq scRNA_data.fastq \
+    --sirv-reference sirv_genome.fa \
+    --sirv-gtf sirv_annotation.gtf \
+    --non-sirv-reference genome.fa \
+    --create-combined-reference \
+    --output-dir ./output \
+    --insertion-rate 0.1
+```
+
+The combined reference will be created at `<output_dir>/combined_reference.fa`.
+
 ### Integration Mode with BAM Input
 
 The pipeline now supports using BAM files directly as input:
@@ -157,6 +175,64 @@ The pipeline automatically models and applies 5'-3' coverage bias to ensure SIRV
   - `detection_rate.png`: Detection rate vs. expected count
   - `transcript_detection.png`: Detection rate by SIRV transcript
 - `report.html`: HTML report summarizing evaluation results
+- `diagnostics/`: Directory containing additional diagnostic visualizations
+  - See Visualization Guide section below for details on these plots
+
+## Visualization Guide
+
+The pipeline generates two sets of visualizations: standard evaluation plots for benchmarking SIRV detection, and detailed diagnostic plots for analyzing the integration and coverage modeling process.
+
+### Standard Evaluation Plots
+
+1. **Count Correlation Plot** (`count_correlation.png`): 
+   - Shows the relationship between expected SIRV counts (x-axis) and observed counts (y-axis)
+   - Perfect correlation would show points along the diagonal line
+   - Points below the line indicate under-counting; points above indicate over-counting
+   - Quantifies accuracy of transcript quantification
+
+2. **Detection Rate Plot** (`detection_rate.png`):
+   - Displays detection status (detected=1, not detected=0) vs. expected count
+   - The red trend line shows how detection probability increases with transcript abundance
+   - Useful for determining detection sensitivity thresholds for your experimental design
+
+3. **Transcript Detection Plot** (`transcript_detection.png`):
+   - Bar chart of detection rates for each SIRV transcript
+   - Identifies transcripts that are consistently missed or detected
+   - Highlights potential sequence-specific biases in detection
+
+### Diagnostic Visualizations
+
+1. **Read Length Distribution** (`diagnostics/plots/read_length_distribution.png`):
+   - Compares original SIRV read lengths to the sampled/modified lengths
+   - Validates that length distributions match the modeling parameters
+   - Dashed lines show mean lengths for each distribution
+
+2. **Length Sampling Relationship** (`diagnostics/plots/length_sampling_relationship.png`):
+   - Scatter plot of original vs. modified read lengths
+   - Correlation value indicates how closely original lengths are preserved
+   - Density coloring shows clustering of length transformations
+
+3. **Truncation Distribution** (`diagnostics/plots/truncation_distribution.png`):
+   - Histogram of read truncation amounts, grouped by transcript
+   - Shows how much each transcript type is shortened
+   - Higher truncation indicates more aggressive length modification
+
+4. **Per-Transcript Length Distribution** (`diagnostics/plots/per_transcript_length_distribution.png`):
+   - Violin plots showing length distribution for each transcript
+   - Red dots indicate mean original length
+   - Reveals transcript-specific length sampling behavior
+
+5. **Coverage Bias Model** (`diagnostics/plots/coverage_bias_model.png`):
+   - Heatmap showing positional coverage bias across normalized transcript positions
+   - Visualizes 5' or 3' bias in the coverage model
+   - Uniform color indicates even coverage; gradient indicates bias
+
+6. **Per-Cell Integration Rate** (`diagnostics/plots/per_cell_integration_rate.png`):
+   - Bar chart showing number of unique SIRV transcripts per cell
+   - Demonstrates the distribution of spike-ins across cells
+   - Helps validate that integration was balanced across the dataset
+
+These visualizations help verify that the pipeline is correctly modeling read characteristics and can be used to diagnose issues with integration, coverage bias modeling, or downstream detection problems.
 
 ## Advanced Options
 
@@ -168,6 +244,9 @@ The pipeline automatically models and applies 5'-3' coverage bias to ensure SIRV
 
 # Integration mode options
 --insertion-rate FLOAT  SIRV insertion rate (0-1, default: 0.1)
+--non-sirv-reference FILE  Path to non-SIRV reference FASTA (e.g., genome reference)
+--create-combined-reference Create combined SIRV + genome reference
+--threads INT           Number of threads for parallel processing (default: 8)
 ```
 
 ## The Complete Pipeline Workflow
@@ -192,4 +271,48 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 Feel free to contact me for questions/suggestions: mschauhan@student.unimelb.edu.au
 
 ## Pipeline Schematic
-![Pipeline Schematic](pipeline_overview.png)
+
+The following diagram illustrates the key steps in the SIRV Integration Pipeline:
+
+```mermaid
+flowchart TD
+    %% Input files
+    SIRV[SIRV Reads\n(FASTQ/BAM)]:::input
+    SC[scRNA-seq Reads\n(FASTQ)]:::input
+    
+    %% Processing steps - left branch
+    SIRV --> MAP[Map to SIRV\nReference]:::process
+    MAP --> TRANS[Transcript\nAssignment]:::process
+    
+    %% Processing steps - right branch
+    SC --> CELL[Extract Cell\nBarcodes & UMIs]:::process
+    CELL --> COV[Model Coverage\nBias]:::process
+    
+    %% Integration
+    TRANS --> INT[Integrate SIRV Reads with\nCell Barcodes & UMIs]:::process
+    COV --> INT
+    
+    %% Output
+    INT --> COMB[Combined FASTQ with\nGround Truth Tracking]:::output
+    
+    %% Evaluation (optional)
+    COMB --> EVAL[Evaluate with FLAMES\n(Optional)]:::process
+    EVAL --> REPORT[Generate Evaluation\nReports & Visualizations]:::output
+    
+    %% Define styles
+    classDef input fill:#8DD3C7,stroke:#333,stroke-width:2px
+    classDef process fill:#BEBADA,stroke:#333,stroke-width:2px
+    classDef output fill:#FB8072,stroke:#333,stroke-width:2px
+    
+    %% Legend
+    classDef legend fill:none,stroke:none
+    
+    subgraph Legend
+        direction LR
+        L_I[Input]:::input
+        L_P[Process]:::process
+        L_O[Output]:::output
+    end
+```
+
+The pipeline integrates SIRV reads into scRNA-seq data with proper cell barcodes and UMIs, enabling accurate benchmarking of transcript identification and quantification tools. The coverage bias modeling ensures realistic read characteristics that match the original dataset.
