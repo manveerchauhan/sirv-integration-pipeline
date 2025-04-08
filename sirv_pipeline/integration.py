@@ -162,9 +162,20 @@ def add_sirv_to_dataset(
     
     # Step 3: Create read length and coverage bias models
     logger.info(f"Creating read length and coverage bias models")
+    
+    # Use provided reference file if available, otherwise default to SIRV reference
+    reference_for_model = reference_file
+    
+    # Check if we should model coverage bias
+    if model_coverage_bias:
+        if reference_for_model:
+            logger.info(f"Using provided reference file for coverage modeling: {reference_for_model}")
+        else:
+            logger.warning("No reference file provided for coverage modeling. Coverage bias may not be accurately modeled.")
+    
     length_sampler, bias_model = create_coverage_bias_model(
         fastq_file=sc_fastq,
-        reference_file=reference_file if model_coverage_bias else None,
+        reference_file=reference_for_model,
         sample_size=sample_size,
         seed=seed
     )

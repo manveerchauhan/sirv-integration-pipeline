@@ -64,6 +64,24 @@ sirv-pipeline --integration \
     --insertion-rate 0.1
 ```
 
+### Integration Mode with Combined References
+
+You can now provide a non-SIRV reference (e.g., genome reference) to improve coverage modeling, and optionally create a combined reference for downstream analysis:
+
+```bash
+sirv-pipeline --integration \
+    --sirv-fastq sirv_reads.fastq \
+    --sc-fastq scRNA_data.fastq \
+    --sirv-reference sirv_genome.fa \
+    --sirv-gtf sirv_annotation.gtf \
+    --non-sirv-reference genome.fa \
+    --create-combined-reference \
+    --output-dir ./output \
+    --insertion-rate 0.1
+```
+
+The combined reference will be created at `<output_dir>/combined_reference.fa`.
+
 ### Integration Mode with BAM Input
 
 The pipeline now supports using BAM files directly as input:
@@ -200,6 +218,9 @@ These visualizations help verify that the pipeline is correctly modeling read ch
 
 # Integration mode options
 --insertion-rate FLOAT  SIRV insertion rate (0-1, default: 0.1)
+--non-sirv-reference FILE  Path to non-SIRV reference FASTA (e.g., genome reference)
+--create-combined-reference Create combined SIRV + genome reference
+--threads INT           Number of threads for parallel processing (default: 8)
 ```
 
 ## The Complete Pipeline Workflow

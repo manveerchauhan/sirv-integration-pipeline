@@ -142,3 +142,39 @@ def validate_files(*files, mode='r') -> bool:
                 raise PermissionError(f"Directory is not writable: {dir_path}")
     
     return True
+
+
+def create_combined_reference(sirv_reference: str, non_sirv_reference: str, output_file: str) -> str:
+    """
+    Combine SIRV and non-SIRV reference files into a single FASTA.
+    
+    Args:
+        sirv_reference: Path to SIRV reference FASTA file
+        non_sirv_reference: Path to non-SIRV reference FASTA file
+        output_file: Path to output combined reference file
+        
+    Returns:
+        str: Path to combined reference file
+    """
+    logger.info(f"Creating combined reference from {sirv_reference} and {non_sirv_reference}")
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+    
+    # Open output file
+    with open(output_file, 'w') as out_f:
+        # First add SIRV reference
+        with open(sirv_reference, 'r') as sirv_f:
+            for line in sirv_f:
+                out_f.write(line)
+        
+        # Add a newline between files if needed
+        out_f.write('\n')
+        
+        # Then add non-SIRV reference
+        with open(non_sirv_reference, 'r') as non_sirv_f:
+            for line in non_sirv_f:
+                out_f.write(line)
+    
+    logger.info(f"Combined reference created: {output_file}")
+    return output_file

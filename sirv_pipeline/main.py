@@ -16,7 +16,7 @@ from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv
 from sirv_pipeline.coverage_bias import model_transcript_coverage
 from sirv_pipeline.integration import add_sirv_to_dataset
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
-from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files
+from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files, create_combined_reference
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,6 +57,14 @@ def parse_args() -> argparse.Namespace:
     integration_group.add_argument(
         "--sc-fastq", type=str,
         help="Path to single-cell FASTQ file"
+    )
+    integration_group.add_argument(
+        "--non-sirv-reference", type=str,
+        help="Path to non-SIRV reference FASTA file (e.g., genome reference)"
+    )
+    integration_group.add_argument(
+        "--create-combined-reference", action="store_true",
+        help="Create a combined SIRV and non-SIRV reference (for downstream analysis)"
     )
     integration_group.add_argument(
         "--insertion-rate", type=float, default=0.1,
@@ -160,6 +168,17 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # Define alignment file path
         alignment_file = os.path.join(args.output_dir, "sirv_alignment.bam")
         
+        # Check if we need to create a combined reference
+        combined_reference = None
+        if args.non_sirv_reference and args.create_combined_reference:
+            combined_reference = os.path.join(args.output_dir, "combined_reference.fa")
+            create_combined_reference(
+                args.sirv_reference,
+                args.non_sirv_reference,
+                combined_reference
+            )
+            logger.info(f"Created combined reference: {combined_reference}")
+        
         # Use either FASTQ or BAM input
         if args.sirv_fastq:
             # Original FASTQ workflow
@@ -225,7 +244,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
             coverage_model_file,
             integrated_fastq,
             tracking_file,
-            insertion_rate=args.insertion_rate
+            insertion_rate=args.insertion_rate,
+            reference_file=combined_reference or args.non_sirv_reference
         )
         
         logger.info(f"Integration completed. Output files in {args.output_dir}")
