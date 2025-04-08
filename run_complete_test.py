@@ -12,6 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import shutil
+import argparse
 
 # Set paths to tools
 os.environ["PATH"] = "/apps/easybuild-2022/easybuild/software/Compiler/GCCcore/11.3.0/minimap2/2.26/bin:/apps/easybuild-2022/easybuild/software/Compiler/GCC/11.3.0/SAMtools/1.21/bin:" + os.environ.get("PATH", "")
@@ -37,6 +38,178 @@ def create_test_directories():
         dir_path.mkdir(parents=True, exist_ok=True)
     
     return test_dir, output_dir, flames_dir, eval_dir, plots_dir
+
+def run_integration_pipeline(coverage_model="10x_cdna", learn_from=None, visualize=True, seed=42):
+    """Run the integration pipeline with specified coverage model."""
+    print(f"Running integration pipeline with {coverage_model} coverage model...")
+    
+    # Create test directories
+    test_dir, output_dir, flames_dir, eval_dir, plots_dir = create_test_directories()
+    
+    # Import the pipeline modules
+    from sirv_pipeline.coverage_bias import CoverageBiasModel
+    from sirv_pipeline.integration import add_sirv_to_dataset
+    from sirv_pipeline.mapping import map_sirv_reads, create_alignment
+    
+    # Define file paths
+    sirv_fastq = test_dir / "sirv_test.fastq"
+    sc_fastq = test_dir / "sc_test.fastq"
+    sirv_reference = test_dir / "sirv_reference.fa"
+    sirv_gtf = test_dir / "sirv_annotation.gtf"
+    
+    # Generate synthetic SIRV FASTQ and annotation if they don't exist
+    if not sirv_fastq.exists() or not sirv_reference.exists() or not sirv_gtf.exists():
+        print("Generating synthetic SIRV data...")
+        create_synthetic_sirv_data(sirv_fastq, sirv_reference, sirv_gtf)
+    
+    # Generate synthetic sc FASTQ if it doesn't exist
+    if not sc_fastq.exists():
+        print("Generating synthetic scRNA-seq data...")
+        create_synthetic_sc_data(sc_fastq)
+    
+    # Map SIRV reads
+    transcript_map_file = output_dir / "transcript_map.csv"
+    alignment_file = output_dir / "sirv_alignment.bam"
+    
+    print("Mapping SIRV reads...")
+    map_sirv_reads(
+        sirv_fastq=str(sirv_fastq),
+        sirv_reference=str(sirv_reference),
+        sirv_gtf=str(sirv_gtf),
+        output_csv=str(transcript_map_file),
+        threads=4
+    )
+    
+    create_alignment(
+        fastq_file=str(sirv_fastq),
+        reference_file=str(sirv_reference),
+        output_bam=str(alignment_file),
+        threads=4,
+        preset="map-ont"
+    )
+    
+    # Initialize coverage bias model
+    coverage_model_file = output_dir / "coverage_model.json"
+    
+    if learn_from:
+        # Learn bias from BAM file
+        print(f"Learning coverage bias from {learn_from}...")
+        coverage_model = CoverageBiasModel(model_type="custom", seed=seed)
+        coverage_model.learn_from_bam(
+            bam_file=learn_from,
+            annotation_file=str(sirv_gtf),
+            min_reads=10,
+            length_bins=3
+        )
+    else:
+        # Use default model
+        print(f"Using default {coverage_model} coverage model...")
+        coverage_model = CoverageBiasModel(model_type=coverage_model, seed=seed)
+    
+    # Save model
+    coverage_model.save(str(coverage_model_file))
+    
+    # Visualize if requested
+    if visualize:
+        plot_file = output_dir / "coverage_bias.png"
+        coverage_model.plot_distributions(str(plot_file))
+    
+    # Add SIRV reads to sc dataset
+    integrated_fastq = output_dir / "integrated.fastq"
+    tracking_file = output_dir / "tracking.csv"
+    expected_file = output_dir / "expected_counts.csv"
+    
+    print("Adding SIRV reads to scRNA-seq dataset...")
+    add_sirv_to_dataset(
+        sc_fastq=str(sc_fastq),
+        sirv_fastq=str(sirv_fastq),
+        transcript_map_file=str(transcript_map_file),
+        coverage_model_file=str(coverage_model_file),
+        output_fastq=str(integrated_fastq),
+        tracking_file=str(tracking_file),
+        expected_file=str(expected_file),
+        insertion_rate=0.05,
+        coverage_model=coverage_model,
+        seed=seed
+    )
+    
+    print("Integration pipeline completed successfully")
+    return tracking_file, expected_file
+
+def create_synthetic_sirv_data(sirv_fastq, sirv_reference, sirv_gtf):
+    """Create synthetic SIRV data for testing."""
+    # Simple SIRV transcripts
+    sirv_transcripts = {
+        "SIRV1": "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        "SIRV2": "TGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA",
+        "SIRV3": "GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA",
+        "SIRV4": "GATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC",
+        "SIRV5": "CGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCG"
+    }
+    
+    # Write SIRV reference
+    with open(sirv_reference, 'w') as f:
+        for name, seq in sirv_transcripts.items():
+            f.write(f">{name}\n{seq}\n")
+    
+    # Write SIRV GTF
+    with open(sirv_gtf, 'w') as f:
+        f.write('##gff-version 3\n')
+        for name, seq in sirv_transcripts.items():
+            length = len(seq)
+            f.write(f"{name}\tSIRV\ttranscript\t1\t{length}\t.\t+\t.\ttranscript_id \"{name}\"; gene_id \"{name}\";\n")
+            f.write(f"{name}\tSIRV\texon\t1\t{length}\t.\t+\t.\ttranscript_id \"{name}\"; gene_id \"{name}\";\n")
+    
+    # Write SIRV FASTQ
+    with open(sirv_fastq, 'w') as f:
+        read_id = 1
+        for name, seq in sirv_transcripts.items():
+            # Create multiple reads with different lengths for each transcript
+            for i in range(10):
+                start = np.random.randint(0, 20)
+                length = np.random.randint(max(40, len(seq) - 30), len(seq))
+                read_seq = seq[start:start+length]
+                qual = 'I' * len(read_seq)  # Constant quality for simplicity
+                
+                f.write(f"@read_{read_id}_{name}\n")
+                f.write(f"{read_seq}\n")
+                f.write(f"+\n")
+                f.write(f"{qual}\n")
+                read_id += 1
+
+def create_synthetic_sc_data(sc_fastq):
+    """Create synthetic single-cell data for testing."""
+    # Mock cell barcodes and UMIs
+    cell_barcodes = ["AAACATGCTTGACTGG", "AAACGGGCACAGTCTA", "AAAGCGATCACCGTAT"]
+    umis = ["ACGTACGTACGT", "TGCATGCATGCA", "GCTAGCTAGCTA", "GATCGATCGATC"]
+    
+    # Genes and sequences
+    genes = {
+        "GENE1": "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG",
+        "GENE2": "CGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGAT",
+        "GENE3": "TAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAG"
+    }
+    
+    # Write scRNA-seq FASTQ
+    with open(sc_fastq, 'w') as f:
+        read_id = 1
+        for gene_name, gene_seq in genes.items():
+            for barcode in cell_barcodes:
+                # Add multiple reads per gene/cell
+                for i in range(np.random.randint(5, 15)):
+                    umi = np.random.choice(umis)
+                    
+                    # Create reads with cell barcode + UMI + gene fragment
+                    start = np.random.randint(0, 10)
+                    length = np.random.randint(40, len(gene_seq) - start)
+                    read_seq = barcode + umi + gene_seq[start:start+length]
+                    qual = 'I' * len(read_seq)  # Constant quality for simplicity
+                    
+                    f.write(f"@read_{read_id}_{gene_name}_{barcode}\n")
+                    f.write(f"{read_seq}\n")
+                    f.write(f"+\n")
+                    f.write(f"{qual}\n")
+                    read_id += 1
 
 def run_integration_pipeline():
     """Run the existing test pipeline to generate integrated FASTQ."""
@@ -335,108 +508,55 @@ def create_comparison_data(expected_counts, flames_df):
     
     return comparison
 
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="SIRV Integration Pipeline Test Runner")
+    
+    parser.add_argument("--coverage-model", type=str, choices=["10x_cdna", "direct_rna", "custom"], 
+                        default="10x_cdna", help="Coverage bias model to use")
+    parser.add_argument("--learn-from", type=str, help="BAM file to learn coverage from")
+    parser.add_argument("--no-visualize", action="store_true", help="Disable visualization")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    
+    return parser.parse_args()
+
 def run_complete_pipeline():
-    """Run the complete pipeline from integration to evaluation."""
+    """Run the complete pipeline, including integration and evaluation."""
+    # Parse arguments
+    args = parse_arguments()
+    
     # Set up environment
     setup_environment()
     
-    # Create directories
+    # Create test directories
     test_dir, output_dir, flames_dir, eval_dir, plots_dir = create_test_directories()
     
-    # Run integration pipeline using direct module approach instead of subprocess
-    print("Running integration pipeline using direct module approach...")
-    
-    try:
-        # First check if run_test_pipeline.py exists and run it
-        if Path("run_test_pipeline.py").exists():
-            import run_test_pipeline
-            run_test_pipeline.main()
-            print("Integration pipeline completed successfully")
-        else:
-            print("run_test_pipeline.py not found, skipping test data generation")
-            print("Make sure test data is already available in test_data directory")
-    except Exception as e:
-        print(f"Error running integration pipeline: {e}")
-        print("Check that test data has been properly generated")
-        return
-    
-    # Paths for files
-    tracking_file = output_dir / "tracking.csv"
-    coverage_model_file = output_dir / "coverage_model.csv"
-    flames_output_file = flames_dir / "simulated_flames_output.csv"
-    comparison_file = eval_dir / "comparison.csv"
-    report_file = eval_dir / "report.html"
-    
-    # Verify tracking file exists
-    if not tracking_file.exists():
-        print(f"Error: Tracking file not found at {tracking_file}")
-        print("Integration pipeline did not complete successfully")
-        return
+    # Run integration pipeline
+    tracking_file, expected_file = run_integration_pipeline(
+        coverage_model=args.coverage_model,
+        learn_from=args.learn_from,
+        visualize=not args.no_visualize,
+        seed=args.seed
+    )
     
     # Simulate FLAMES output
+    flames_output_file = flames_dir / "flames_output.csv"
     flames_df, expected_counts = simulate_flames_output(tracking_file, flames_output_file)
     
     # Create comparison data
     comparison_df = create_comparison_data(expected_counts, flames_df)
-    
-    # Save comparison data
+    comparison_file = eval_dir / "comparison.csv"
     comparison_df.to_csv(comparison_file, index=False)
     
     # Generate plots
     transcript_stats = generate_plots(comparison_df, plots_dir)
     
     # Create HTML report
+    report_file = eval_dir / "report.html"
     create_html_report(comparison_df, transcript_stats, eval_dir, plots_dir, report_file)
     
-    # Create a simple HTML index to open the report
-    index_html = eval_dir / "index.html"
-    with open(index_html, 'w') as f:
-        f.write(f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>SIRV Evaluation Results</title>
-            <meta http-equiv="refresh" content="0; url='report.html'" />
-        </head>
-        <body>
-            <p>Redirecting to <a href="report.html">report.html</a>...</p>
-        </body>
-        </html>
-        """)
-    
-    # Generate additional diagnostic visualizations
-    try:
-        print("\nGenerating additional diagnostic visualizations...")
-        try:
-            import seaborn
-            print("Seaborn is available - full diagnostics will be generated")
-        except ImportError:
-            print("Warning: Seaborn is not installed - limited diagnostics will be available")
-            print("To enable full diagnostics, install seaborn: pip install seaborn")
-        
-        from sirv_pipeline.diagnostics import create_diagnostic_visualizations
-        
-        diagnostic_plots = create_diagnostic_visualizations(
-            tracking_file=tracking_file,
-            coverage_model_file=coverage_model_file,
-            eval_dir=eval_dir
-        )
-        print(f"Diagnostic visualizations created in {eval_dir}/diagnostics/")
-    except Exception as e:
-        print(f"Warning: Could not generate diagnostic visualizations: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("\nComplete pipeline run finished!")
-    print("\nOutput files:")
-    print(f"- Integration output: {output_dir}")
-    print(f"- Simulated FLAMES output: {flames_output_file}")
-    print(f"- Evaluation results: {eval_dir}")
-    print(f"- Visualization plots: {plots_dir}")
-    print(f"- HTML report: {report_file}")
-    print(f"- HTML index: {index_html}")
-    print(f"- Diagnostic visualizations: {eval_dir}/diagnostics/diagnostics.html")
-    print("\nTo view the reports, open the html files in a web browser.")
+    print(f"Complete test pipeline finished. Results in {eval_dir}")
+    print(f"HTML report: {report_file}")
 
 if __name__ == "__main__":
     run_complete_pipeline() 

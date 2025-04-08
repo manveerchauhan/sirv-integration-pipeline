@@ -13,7 +13,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Union
 
 from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam
-from sirv_pipeline.coverage_bias import model_transcript_coverage
+from sirv_pipeline.coverage_bias import model_transcript_coverage, CoverageBiasModel
 from sirv_pipeline.integration import add_sirv_to_dataset
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
 from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files, create_combined_reference
@@ -71,6 +71,37 @@ def parse_args() -> argparse.Namespace:
         help="SIRV insertion rate (0-1, default: 0.1)"
     )
     
+    # Coverage bias modeling arguments
+    coverage_group = parser.add_argument_group("Coverage Bias Modeling")
+    coverage_group.add_argument(
+        "--coverage-model", type=str, choices=["10x_cdna", "direct_rna", "custom"], default="10x_cdna",
+        help="Type of coverage bias model to use (default: 10x_cdna)"
+    )
+    coverage_group.add_argument(
+        "--learn-coverage-from", type=str,
+        help="Learn coverage bias from BAM file"
+    )
+    coverage_group.add_argument(
+        "--coverage-model-file", type=str,
+        help="Path to save/load coverage model (default: <output_dir>/coverage_model.json)"
+    )
+    coverage_group.add_argument(
+        "--visualize-coverage", action="store_true",
+        help="Generate coverage bias visualizations"
+    )
+    coverage_group.add_argument(
+        "--min-reads", type=int, default=100,
+        help="Minimum reads required for bias learning (default: 100)"
+    )
+    coverage_group.add_argument(
+        "--length-bins", type=int, default=5,
+        help="Number of transcript length bins (default: 5)"
+    )
+    coverage_group.add_argument(
+        "--disable-coverage-bias", action="store_true",
+        help="Disable coverage bias modeling"
+    )
+    
     # Evaluation mode arguments
     evaluation_group = parser.add_argument_group("Evaluation Mode")
     evaluation_group.add_argument(
@@ -95,6 +126,10 @@ def parse_args() -> argparse.Namespace:
     common_group.add_argument(
         "--threads", type=int, default=8,
         help="Number of threads for parallel processing (default: 8)"
+    )
+    common_group.add_argument(
+        "--seed", type=int,
+        help="Random seed for reproducibility"
     )
     common_group.add_argument(
         "--verbose", action="store_true",
@@ -129,6 +164,10 @@ def parse_args() -> argparse.Namespace:
     if not args.log_file:
         args.log_file = os.path.join(args.output_dir, "pipeline.log")
     
+    # Set default coverage model file
+    if not args.coverage_model_file:
+        args.coverage_model_file = os.path.join(args.output_dir, "coverage_model.json")
+    
     return args
 
 
@@ -155,7 +194,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     
     # Paths for output files
     transcript_map_file = os.path.join(args.output_dir, "transcript_map.csv")
-    coverage_model_file = os.path.join(args.output_dir, "coverage_model.csv")
+    coverage_model_file = args.coverage_model_file
     integrated_fastq = os.path.join(args.output_dir, "integrated.fastq")
     tracking_file = os.path.join(args.output_dir, "tracking.csv")
     comparison_file = os.path.join(args.output_dir, "comparison.csv")
@@ -212,13 +251,46 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 threads=args.threads
             )
         
-        # Model transcript coverage
-        logger.info("Modeling transcript coverage...")
-        model_transcript_coverage(
-            alignment_file,
-            args.sirv_gtf,
-            coverage_model_file
-        )
+        # Check if BAM file has reads before proceeding
+        if os.path.exists(alignment_file) and os.path.getsize(alignment_file) > 0:
+            # Initialize coverage bias model
+            coverage_model = None
+            if args.disable_coverage_bias:
+                logger.info("Coverage bias modeling disabled")
+                model_coverage_bias = False
+            else:
+                model_coverage_bias = True
+                
+                # Initialize the coverage model
+                if args.learn_coverage_from:
+                    logger.info(f"Learning coverage bias from {args.learn_coverage_from}")
+                    coverage_model = CoverageBiasModel(
+                        model_type=args.coverage_model,
+                        bin_count=100,
+                        seed=args.seed
+                    )
+                    coverage_model.learn_from_bam(
+                        bam_file=args.learn_coverage_from,
+                        annotation_file=args.sirv_gtf,
+                        min_reads=args.min_reads,
+                        length_bins=args.length_bins
+                    )
+                    
+                    # Save learned model
+                    coverage_model.save(coverage_model_file)
+                    
+                    if args.visualize_coverage:
+                        # Generate visualization
+                        plot_file = os.path.join(args.output_dir, "coverage_bias.png")
+                        coverage_model.plot_distributions(plot_file)
+                else:
+                    # Use default model based on type
+                    logger.info(f"Using default {args.coverage_model} coverage bias model")
+                    model_transcript_coverage(
+                        alignment_file,
+                        args.sirv_gtf,
+                        os.path.join(args.output_dir, "coverage_model_legacy.csv")
+                    )
         
         # Check if we have any mapped SIRV reads before proceeding
         if os.path.exists(transcript_map_file) and os.path.getsize(transcript_map_file) > 0:
@@ -238,14 +310,19 @@ def run_pipeline(args: argparse.Namespace) -> None:
             extract_fastq_from_bam(alignment_file, sirv_fastq_for_integration)
         
         add_sirv_to_dataset(
-            args.sc_fastq,
-            sirv_fastq_for_integration,
-            transcript_map_file,
-            coverage_model_file,
-            integrated_fastq,
-            tracking_file,
+            sc_fastq=args.sc_fastq,
+            sirv_fastq=sirv_fastq_for_integration,
+            transcript_map_file=transcript_map_file,
+            coverage_model_file=coverage_model_file,
+            output_fastq=integrated_fastq,
+            tracking_file=tracking_file,
             insertion_rate=args.insertion_rate,
-            reference_file=combined_reference or args.non_sirv_reference
+            reference_file=combined_reference or args.non_sirv_reference,
+            annotation_file=args.sirv_gtf,
+            coverage_model=coverage_model,
+            coverage_model_type=args.coverage_model,
+            model_coverage_bias=not args.disable_coverage_bias,
+            seed=args.seed
         )
         
         logger.info(f"Integration completed. Output files in {args.output_dir}")
@@ -254,28 +331,27 @@ def run_pipeline(args: argparse.Namespace) -> None:
     if evaluation_mode:
         logger.info("Running in evaluation mode")
         
-        # If this is a continuation of integration mode, use the generated tracking file
-        expected_file = args.expected_file or tracking_file
+        # Ensure input files exist
+        validate_files(args.expected_file, args.flames_output, mode='r')
         
-        # Check if the expected file exists
-        if not os.path.exists(expected_file):
-            logger.error(f"Expected file not found: {expected_file}")
-            sys.exit(1)
-        
-        # Compare with FLAMES output
-        logger.info("Comparing with FLAMES output...")
+        # Compare expected vs. observed SIRV counts
+        logger.info("Comparing expected vs. observed SIRV counts...")
         compare_with_flames(
-            expected_file,
-            args.flames_output,
-            comparison_file,
-            plot_dir=os.path.join(args.output_dir, "plots")
+            expected_file=args.expected_file,
+            flames_output=args.flames_output,
+            comparison_file=comparison_file
         )
         
-        # Generate report
-        logger.info("Generating report...")
+        # Generate evaluation report
+        logger.info("Generating evaluation report...")
+        plots_dir = os.path.join(args.output_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        
         generate_report(
-            comparison_file,
-            report_file
+            comparison_file=comparison_file,
+            tracking_file=args.expected_file,
+            plots_dir=plots_dir,
+            report_file=report_file
         )
         
         logger.info(f"Evaluation completed. Results in {args.output_dir}")
@@ -284,7 +360,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
 
 def main():
-    """Entry point for the SIRV Integration Pipeline."""
+    """Main entry point for the SIRV Integration Pipeline."""
     args = parse_args()
     run_pipeline(args)
 

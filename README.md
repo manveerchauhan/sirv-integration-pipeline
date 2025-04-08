@@ -51,6 +51,7 @@ flowchart TD
 - Maps SIRV reads to reference to identify transcripts of origin
 - Adds cell barcodes and UMIs to SIRV reads for single-cell analysis
 - Models read length distributions and 5'-3' coverage bias
+- Supports sophisticated coverage bias modeling for different sequencing technologies
 - Generates tracking information for benchmarking
 - Supports both FASTQ and BAM files as SIRV input
 
@@ -62,7 +63,7 @@ cd sirv-integration-pipeline
 pip install .
 ```
 
-Dependencies: Python 3.7+, numpy, pandas, matplotlib, seaborn, jinja2, minimap2, samtools
+Dependencies: Python 3.7+, numpy, pandas, matplotlib, seaborn, jinja2, minimap2, samtools, scipy, gffutils, pysam
 
 ## Usage
 
@@ -76,6 +77,34 @@ sirv-pipeline --integration \
     --sirv-gtf sirv_annotation.gtf \
     --output-dir ./output \
     --insertion-rate 0.01
+```
+
+### With Coverage Bias Modeling
+
+```bash
+sirv-pipeline --integration \
+    --sirv-fastq sirv_reads.fastq \
+    --sc-fastq scRNA_data.fastq \
+    --sirv-reference sirv_genome.fa \
+    --sirv-gtf sirv_annotation.gtf \
+    --coverage-model 10x_cdna \
+    --visualize-coverage \
+    --output-dir ./output
+```
+
+### Learning Coverage Bias from Data
+
+```bash
+sirv-pipeline --integration \
+    --sirv-fastq sirv_reads.fastq \
+    --sc-fastq scRNA_data.fastq \
+    --sirv-reference sirv_genome.fa \
+    --sirv-gtf sirv_annotation.gtf \
+    --learn-coverage-from aligned_reads.bam \
+    --min-reads 100 \
+    --length-bins 5 \
+    --visualize-coverage \
+    --output-dir ./output
 ```
 
 ### With Combined References
@@ -116,7 +145,8 @@ sirv-pipeline --evaluation \
 ### Integration Mode
 - `integrated.fastq`: FASTQ with SIRV reads added to scRNA-seq data
 - `transcript_map.csv`: Mapping of SIRV reads to transcripts
-- `coverage_model.csv`: Coverage bias model
+- `coverage_model.json`: Serialized coverage bias model
+- `coverage_bias.png`: Visualization of coverage bias distributions
 - `tracking.csv`: Tracking information for inserted reads
 
 ### Evaluation Mode
@@ -134,7 +164,36 @@ sirv-pipeline --evaluation \
 | `--threads INT` | Number of threads | `8` |
 | `--non-sirv-reference FILE` | Path to genome reference | None |
 | `--create-combined-reference` | Create combined reference | False |
+| `--coverage-model TYPE` | Coverage bias model type | `10x_cdna` |
+| `--learn-coverage-from BAM` | Learn bias from BAM file | None |
+| `--min-reads INT` | Min reads for bias learning | `100` |
+| `--length-bins INT` | Transcript length bins | `5` |
+| `--visualize-coverage` | Generate bias visualizations | False |
+| `--disable-coverage-bias` | Disable bias modeling | False |
+| `--seed INT` | Random seed | None |
 | `--verbose` | Enable verbose logging | False |
+
+## Coverage Bias Models
+
+The pipeline includes sophisticated coverage bias modeling to accurately represent the non-uniform distribution of reads across transcripts:
+
+### Predefined Models
+
+- **10x_cdna**: Models the 3' bias typical in 10X Chromium cDNA libraries
+- **direct_rna**: Models the 5' bias typically seen in direct RNA sequencing
+- **custom**: Custom bias pattern that can be learned from existing data
+
+### Learning from Data
+
+The coverage bias model can be trained on your own BAM files to capture technology-specific biases:
+
+```bash
+sirv-pipeline --integration \
+    --learn-coverage-from aligned_reads.bam \
+    --length-bins 5 \
+    --min-reads 100 \
+    --visualize-coverage
+```
 
 ## Development
 

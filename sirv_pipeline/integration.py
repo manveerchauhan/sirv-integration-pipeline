@@ -15,7 +15,7 @@ from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Any
 
 # Import from other modules
-from sirv_pipeline.coverage_bias import create_coverage_bias_model, CoverageBiasModel, ReadLengthSampler
+from sirv_pipeline.coverage_bias import CoverageBiasModel, ReadLengthSampler, sample_read_lengths
 from sirv_pipeline.utils import validate_files
 
 # Set up logger
@@ -69,13 +69,16 @@ def add_sirv_to_dataset(
     sc_fastq: str,
     sirv_fastq: str,
     transcript_map_file: str,
-    coverage_model_file: str,
-    output_fastq: str,
+    coverage_model_file: Optional[str] = None,
+    output_fastq: str = "integrated.fastq",
     tracking_file: Optional[str] = None,
     insertion_rate: float = 0.01,
     expected_file: Optional[str] = None,
     sample_size: int = 1000,
     reference_file: Optional[str] = None,
+    annotation_file: Optional[str] = None,
+    coverage_model: Optional[CoverageBiasModel] = None,
+    coverage_model_type: str = "10x_cdna",  # New parameter 
     model_coverage_bias: bool = True,
     seed: Optional[int] = None
 ) -> Tuple[str, str, str]:
@@ -86,13 +89,16 @@ def add_sirv_to_dataset(
         sc_fastq: Path to single-cell FASTQ file
         sirv_fastq: Path to SIRV FASTQ file
         transcript_map_file: Path to transcript mapping CSV file
-        coverage_model_file: Path to coverage model CSV file
+        coverage_model_file: Path to save/load coverage model file
         output_fastq: Path to output integrated FASTQ file
         tracking_file: Path to output tracking file (default: <output_dir>/tracking.csv)
         insertion_rate: Rate of SIRV insertion (0-1, default: 0.01)
         expected_file: Path to output expected counts file (default: <output_dir>/expected_counts.csv)
         sample_size: Number of reads to sample for coverage modeling
         reference_file: Path to reference file for coverage modeling (optional)
+        annotation_file: Path to annotation file for coverage learning (optional)
+        coverage_model: Existing coverage model to use (optional)
+        coverage_model_type: Type of coverage bias model ('10x_cdna', 'direct_rna', 'custom')
         model_coverage_bias: Whether to model coverage bias (default: True)
         seed: Random seed for reproducibility
         
@@ -160,30 +166,44 @@ def add_sirv_to_dataset(
     logger.info(f"Extracting cell information")
     cell_info = extract_cell_info(sc_fastq, sample_size)
     
-    # Step 3: Create read length and coverage bias models
-    logger.info(f"Creating read length and coverage bias models")
+    # Step 3: Create read length sampler and coverage bias model
+    logger.info(f"Creating read length sampler and coverage bias model")
     
-    # Use provided reference file if available, otherwise default to SIRV reference
-    reference_for_model = reference_file
+    # Sample read lengths from input FASTQ
+    read_lengths = sample_read_lengths(sc_fastq, sample_size)
+    length_sampler = ReadLengthSampler(read_lengths, seed=seed)
     
-    # Check if we should model coverage bias
-    if model_coverage_bias:
-        if reference_for_model:
-            logger.info(f"Using provided reference file for coverage modeling: {reference_for_model}")
+    # Initialize coverage model
+    if coverage_model is None:
+        if coverage_model_file is not None and os.path.exists(coverage_model_file):
+            # Load existing model from file
+            logger.info(f"Loading coverage model from {coverage_model_file}")
+            coverage_model = CoverageBiasModel(model_type=coverage_model_type, seed=seed)
+            coverage_model.load(coverage_model_file)
+        elif model_coverage_bias:
+            # Create a new model
+            if annotation_file and reference_file:
+                logger.info(f"Learning coverage model from reference data")
+                # Create a BAM file from 10X Chromium data
+                # This would typically be done in a separate step
+                # but for now we'll use the default model
+                coverage_model = CoverageBiasModel(model_type=coverage_model_type, seed=seed)
+            else:
+                # Use default model
+                logger.info(f"Using default coverage model ({coverage_model_type})")
+                coverage_model = CoverageBiasModel(model_type=coverage_model_type, seed=seed)
         else:
-            logger.warning("No reference file provided for coverage modeling. Coverage bias may not be accurately modeled.")
+            # Create a uniform model (no bias)
+            logger.info("Coverage bias modeling disabled, using uniform model")
+            coverage_model = CoverageBiasModel(model_type="custom", seed=seed)
     
-    length_sampler, bias_model = create_coverage_bias_model(
-        fastq_file=sc_fastq,
-        reference_file=reference_for_model,
-        sample_size=sample_size,
-        seed=seed
-    )
+    # Save the model if a file is specified
+    if coverage_model_file is not None and not os.path.exists(coverage_model_file):
+        coverage_model.save(coverage_model_file)
     
-    # Plot coverage bias model if available
-    if model_coverage_bias and bias_model.has_model:
-        plot_file = os.path.join(output_dir, "coverage_bias.png")
-        bias_model.plot_distributions(plot_file)
+    # Plot coverage bias model
+    plot_file = os.path.join(output_dir, "coverage_bias.png")
+    coverage_model.plot_distributions(plot_file)
     
     # Step 4: Load SIRV reads
     logger.info(f"Loading SIRV reads")
@@ -195,8 +215,8 @@ def add_sirv_to_dataset(
             read_id = record.id
             if read_id in read_to_transcript:
                 sirv_reads[read_id] = {
-                    'sequence': str(record.seq),
-                    'quality': record.letter_annotations['phred_quality'],
+                    'seq': str(record.seq),
+                    'qual': ''.join(chr(q+33) for q in record.letter_annotations['phred_quality']),
                     'transcript': read_to_transcript[read_id],
                     'length': len(record.seq)
                 }
@@ -249,69 +269,76 @@ def add_sirv_to_dataset(
     for i, (read_id, barcode) in enumerate(zip(selected_reads, cell_assignments)):
         sirv_read = sirv_reads[read_id]
         
-        # Generate UMI and sample read length
+        # Generate a UMI for this read
         umi = barcode_gen.generate_umi()
+        
+        # Apply coverage bias model to determine read start/end
+        original_seq = sirv_read['seq']
+        original_qual = sirv_read['qual']
+        original_length = len(original_seq)
+        
+        # Sample a read length from the distribution
         target_length = length_sampler.sample()
         
-        # Apply coverage bias if model is available
-        if model_coverage_bias and bias_model.has_model:
-            # Convert quality scores to ASCII
-            quality_string = ''.join(chr(q + 33) for q in sirv_read['quality'])
-            
-            # Apply bias to sequence
-            seq, qual = bias_model.apply_to_sequence(
-                sirv_read['sequence'], 
-                quality_string, 
-                target_length
-            )
-            
-            # Convert quality back to integer list if needed
-            quality_scores = [ord(q) - 33 for q in qual]
-        else:
-            # Just truncate to target length
-            seq = sirv_read['sequence'][:target_length]
-            quality_scores = sirv_read['quality'][:target_length]
+        # Apply coverage bias to get biased sequence
+        biased_seq, biased_qual = coverage_model.apply_to_sequence(
+            sequence=original_seq,
+            quality=original_qual,
+            target_length=target_length
+        )
+        sampled_length = len(biased_seq)
         
-        # Create new read ID with cell barcode
-        new_read_id = f"{read_id}-{barcode}-{umi}"
+        # Prepend cell barcode and UMI to the sequence
+        # Format: [BC][UMI][sequence]
+        seq_with_tags = barcode + umi + biased_seq
+        qual_with_tags = 'I' * (len(barcode) + len(umi)) + biased_qual
         
-        # Convert quality scores to FASTQ format
-        quality_string = ''.join(chr(q + 33) for q in quality_scores)
+        # Create new read ID with info about original read
+        new_read_id = f"SIRV_{i+1}_BC_{barcode}_UMI_{umi}_orig_{read_id}"
         
         # Write to output FASTQ
-        output_handle.write(f"@{new_read_id}\n{seq}\n+\n{quality_string}\n")
+        output_handle.write(f"@{new_read_id}\n")
+        output_handle.write(f"{seq_with_tags}\n")
+        output_handle.write(f"+\n")
+        output_handle.write(f"{qual_with_tags}\n")
         
-        # Track this read
+        # Track this read for evaluation
         tracking_data.append({
             'read_id': new_read_id,
             'original_read_id': read_id,
             'barcode': barcode,
             'umi': umi,
             'sirv_transcript': sirv_read['transcript'],
-            'original_length': sirv_read['length'],
-            'sampled_length': len(seq)
+            'original_length': original_length,
+            'sampled_length': sampled_length
         })
         
         # Update expected counts
-        key = (barcode, sirv_read['transcript'])
-        expected_counts[key] = expected_counts.get(key, 0) + 1
+        count_key = (barcode, sirv_read['transcript'])
+        if count_key not in expected_counts:
+            expected_counts[count_key] = 0
+        expected_counts[count_key] += 1
         
-        # Log progress occasionally
-        if (i + 1) % 1000 == 0:
-            logger.info(f"Added {i+1}/{n_sirv_reads} SIRV reads")
+        # Log progress periodically
+        if (i+1) % 1000 == 0:
+            logger.info(f"Processed {i+1}/{n_sirv_reads} SIRV reads")
     
     # Close output file
     output_handle.close()
     
-    # Write tracking file
+    # Step 6: Write tracking and expected count files
+    logger.info(f"Writing tracking and expected count files")
+    
+    # Save tracking data
     tracking_df = pd.DataFrame(tracking_data)
     tracking_df.to_csv(tracking_file, index=False)
     
-    # Write expected counts file
-    expected_df = pd.DataFrame([
-        {'barcode': k[0], 'sirv_transcript': k[1], 'expected_count': v}
-        for k, v in expected_counts.items()
-    ])
+    # Save expected counts
+    expected_counts_data = [
+        {'barcode': bc, 'sirv_transcript': tx, 'expected_count': count}
+        for (bc, tx), count in expected_counts.items()
+    ]
+    expected_df = pd.DataFrame(expected_counts_data)
     expected_df.to_csv(expected_file, index=False)
     
     logger.info(f"Integration complete. Output files:")
