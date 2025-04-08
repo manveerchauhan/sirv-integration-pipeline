@@ -80,6 +80,9 @@ Thumbs.db
 # *.png
 # *.html
 
+# Schematic files duplicates
+pipeline_schematic.txt
+
 # Keep example data
 !examples/**/*.fastq
 !examples/**/*.bam

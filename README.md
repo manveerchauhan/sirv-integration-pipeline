@@ -136,6 +136,39 @@ sirv-pipeline --evaluation \
 | `--create-combined-reference` | Create combined reference | False |
 | `--verbose` | Enable verbose logging | False |
 
+## Development
+
+### Running Tests
+
+The repository includes test scripts to verify functionality:
+
+```bash
+# Run basic pipeline test with synthetic data
+python run_test_pipeline.py
+
+# Run complete test (integration + evaluation)
+python run_complete_test.py
+```
+
+Test scripts will generate synthetic SIRV and scRNA-seq data in the `test_data/` directory.
+
+### Adding New Features
+
+1. Implement new functionality in appropriate modules under `sirv_pipeline/`
+2. Update `main.py` to expose new features via CLI
+3. Add tests for new functionality
+4. Update documentation in this README
+
+### HPC Usage
+
+For large datasets, use the provided SLURM script:
+
+```bash
+sbatch sirv_integration_pipeline.slurm
+```
+
+Modify the script parameters in the header section as needed.
+
 ## Contact
 
 Questions or suggestions: mschauhan@student.unimelb.edu.au

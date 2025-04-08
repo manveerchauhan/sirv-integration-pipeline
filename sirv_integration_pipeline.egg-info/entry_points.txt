@@ -1,2 +1,0 @@
-[console_scripts]
-sirv-pipeline = sirv_pipeline.__main__:main
