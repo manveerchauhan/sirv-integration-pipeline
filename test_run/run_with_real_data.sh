@@ -9,9 +9,8 @@ REAL_SCRNA_PATH="/data/gpfs/projects/punim2251/Aim1_LongBench/ReadRarefaction_wF
 echo "Generating synthetic SIRV test data..."
 python synthetic_sirv_fastq.py \
     --sirv_reads 1000 \
-    --output_dir ./test_data \
-    --skip_scrna
-
+    --output_dir ./test_data 
+    
 # Run the simple integration with real scRNA-seq data
 echo "Running SIRV integration with real scRNA-seq data..."
 python /data/gpfs/projects/punim2251/sirv-integration-pipeline/examples/simple_integration.py \

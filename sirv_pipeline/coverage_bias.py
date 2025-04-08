@@ -1,432 +1,462 @@
 """
-Coverage bias modeling for the SIRV Integration Pipeline.
+Coverage bias modeling module for SIRV Integration Pipeline.
 
-This module provides functionality to learn and simulate coverage bias
-patterns observed in long-read sequencing, particularly the 5' to 3'
-positional bias of reads along transcripts.
+This module analyzes BAM files to model 5'-3' coverage bias for
+transcript integration.
 """
 
 import os
 import logging
-import pickle
-import random
-import numpy as np
+import subprocess
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Any, Union
-from Bio import SeqIO
+import numpy as np
+import random
 import matplotlib.pyplot as plt
+from typing import Dict, List, Optional, Tuple, Any
 
-# Try to import pysam for BAM processing
-try:
-    import pysam
-except ImportError:
-    pysam = None
+from sirv_pipeline.utils import validate_files
 
 # Set up logger
 logger = logging.getLogger(__name__)
 
+# Define full path to samtools
+SAMTOOLS_PATH = "/apps/easybuild-2022/easybuild/software/Compiler/GCC/11.3.0/SAMtools/1.21/bin/samtools"
+
+
+def model_transcript_coverage(
+    bam_file: str,
+    gtf_file: str,
+    output_csv: str,
+    num_bins: int = 100
+) -> pd.DataFrame:
+    """Model 5'-3' coverage bias for SIRV transcripts."""
+    # Validate input files
+    validate_files(bam_file, gtf_file, mode='r')
+    validate_files(output_csv, mode='w')
+    
+    logger.info(f"Modeling transcript coverage from {bam_file}")
+    
+    # Check if BAM file is empty
+    try:
+        # Run samtools view to check if BAM has alignments
+        result = subprocess.run(
+            [SAMTOOLS_PATH, "view", bam_file], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True
+        )
+        
+        if not result.stdout.strip():
+            logger.warning("BAM file has no alignments. Creating default coverage model.")
+            # Create a default coverage model with uniform distribution
+            transcripts = extract_transcript_coordinates(gtf_file)
+            coverage_df = pd.DataFrame(
+                {transcript_id: [1.0] * num_bins for transcript_id in transcripts.keys()},
+                index=[f"bin_{i+1}" for i in range(num_bins)]
+            ).T
+            coverage_df.index.name = 'transcript_id'
+            coverage_df.to_csv(output_csv)
+            logger.info(f"Default coverage model saved to {output_csv}")
+            return coverage_df
+            
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error checking BAM file: {e.stderr}")
+    
+    # Create output directory if needed
+    os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
+    
+    # Extract transcript coordinates from GTF
+    transcripts = extract_transcript_coordinates(gtf_file)
+    
+    # Extract coverage for each transcript
+    coverage_models = {}
+    for transcript_id, coords in transcripts.items():
+        model = calculate_transcript_coverage(
+            bam_file, 
+            coords['chrom'], 
+            coords['start'], 
+            coords['end'], 
+            num_bins
+        )
+        coverage_models[transcript_id] = model
+    
+    # Save coverage models to CSV
+    coverage_df = pd.DataFrame.from_dict(coverage_models, orient='index')
+    coverage_df.index.name = 'transcript_id'
+    
+    # Add column names (bin positions)
+    bin_positions = [f"bin_{i+1}" for i in range(num_bins)]
+    coverage_df.columns = bin_positions
+    
+    # Save to CSV
+    coverage_df.to_csv(output_csv)
+    logger.info(f"Coverage models saved to {output_csv}")
+    
+    return coverage_df
+
+
+def extract_transcript_coordinates(gtf_file: str) -> Dict[str, Dict[str, int]]:
+    """Extract transcript coordinates from GTF file."""
+    transcripts = {}
+    
+    with open(gtf_file, 'r') as f:
+        for line in f:
+            # Skip comments
+            if line.startswith('#'):
+                continue
+            
+            # Parse GTF line
+            fields = line.strip().split('\t')
+            if len(fields) < 9:
+                continue
+            
+            feature_type = fields[2]
+            if feature_type != 'transcript':
+                continue
+            
+            # Extract transcript ID
+            attributes = fields[8]
+            transcript_id = None
+            for attr in attributes.split(';'):
+                if 'transcript_id' in attr:
+                    transcript_id = attr.strip().split(' ')[1].replace('"', '')
+                    break
+            
+            if transcript_id and 'SIRV' in transcript_id:
+                # Store transcript coordinates
+                transcripts[transcript_id] = {
+                    'chrom': fields[0],
+                    'start': int(fields[3]),
+                    'end': int(fields[4])
+                }
+    
+    logger.info(f"Extracted coordinates for {len(transcripts)} transcripts from GTF")
+    return transcripts
+
+
+def calculate_transcript_coverage(
+    bam_file: str,
+    chrom: str,
+    start: int,
+    end: int,
+    num_bins: int = 100
+) -> List[float]:
+    """Calculate positional coverage for a transcript."""
+    # Use samtools to extract coverage
+    coverage = get_coverage_from_bam(bam_file, chrom, start, end)
+    
+    # Bin the coverage
+    return bin_coverage(coverage, num_bins)
+
+
+def get_coverage_from_bam(
+    bam_file: str,
+    chrom: str,
+    start: int,
+    end: int
+) -> List[int]:
+    """Get base-level coverage from BAM file using samtools depth."""
+    # Build samtools command
+    cmd = [
+        SAMTOOLS_PATH, "depth",
+        "-r", f"{chrom}:{start}-{end}",
+        bam_file
+    ]
+    
+    try:
+        # Run samtools
+        result = subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Parse output
+        coverage = [0] * (end - start + 1)
+        for line in result.stdout.splitlines():
+            fields = line.strip().split('\t')
+            pos = int(fields[1])
+            depth = int(fields[2])
+            if start <= pos <= end:
+                coverage[pos - start] = depth
+        
+        return coverage
+    
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error running samtools: {e.stderr}")
+        return [0] * (end - start + 1)
+
+
+def bin_coverage(coverage: List[int], num_bins: int) -> List[float]:
+    """Bin coverage values into fixed number of bins."""
+    if not coverage:
+        return [0] * num_bins
+    
+    # Convert to numpy array
+    coverage_array = np.array(coverage)
+    
+    # Calculate bin size
+    bin_size = len(coverage) / num_bins
+    
+    # Create bins
+    binned_coverage = []
+    for i in range(num_bins):
+        bin_start = int(i * bin_size)
+        bin_end = int((i + 1) * bin_size)
+        bin_coverage = coverage_array[bin_start:bin_end]
+        
+        # Calculate mean coverage for bin
+        if len(bin_coverage) > 0:
+            binned_coverage.append(float(np.mean(bin_coverage)))
+        else:
+            binned_coverage.append(0.0)
+    
+    # Normalize bins
+    if max(binned_coverage) > 0:
+        binned_coverage = [x / max(binned_coverage) for x in binned_coverage]
+    
+    return binned_coverage
+
+
+def sample_from_model(
+    coverage_model: List[float], 
+    transcript_length: int
+) -> List[bool]:
+    """Sample coverage based on coverage model."""
+    # Scale model to transcript length
+    scaled_model = scale_model_to_length(coverage_model, transcript_length)
+    
+    # Sample coverage
+    return [np.random.random() < p for p in scaled_model]
+
+
+def scale_model_to_length(
+    coverage_model: List[float],
+    target_length: int
+) -> List[float]:
+    """Scale coverage model to target length."""
+    bin_size = target_length / len(coverage_model)
+    scaled_model = []
+    
+    for bin_prob in coverage_model:
+        # Repeat bin probability for each position in bin
+        num_positions = int(bin_size)
+        scaled_model.extend([bin_prob] * num_positions)
+    
+    # Adjust for rounding errors
+    while len(scaled_model) < target_length:
+        scaled_model.append(coverage_model[-1])
+    
+    # Trim if necessary
+    return scaled_model[:target_length]
+
 
 class CoverageBiasModel:
-    """
-    Model for learning and simulating 5'-3' coverage bias in long reads.
+    """Class for modeling and applying coverage bias."""
     
-    This class learns the positional bias of read starts and ends along
-    transcripts from existing data, and can apply similar patterns to
-    synthetic reads to better mimic real sequencing characteristics.
-    """
-    
-    def __init__(self, bins: int = 100, smoothing: float = 0.1, 
-                 min_coverage: int = 5, seed: Optional[int] = None):
-        """
-        Initialize the coverage bias model.
+    def __init__(self, coverage_data: Optional[pd.DataFrame] = None, seed: Optional[int] = None):
+        """Initialize the coverage bias model."""
+        self.coverage_data = coverage_data
+        self.has_model = coverage_data is not None
         
-        Args:
-            bins: Number of bins to divide transcripts into for modeling
-            smoothing: Strength of smoothing applied to distributions
-            min_coverage: Minimum number of reads per transcript to include in model
-            seed: Random seed for reproducibility
-        """
-        self.bins = bins
-        self.smoothing = smoothing
-        self.min_coverage = min_coverage
-        self.has_model = False
-        self.start_dist = None
-        self.end_dist = None
-        
-        # Set random seed if provided
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
     
-    def learn_from_bam(self, bam_file: str, reference_file: str) -> bool:
+    def apply_to_sequence(self, sequence: str, quality: str, target_length: int) -> Tuple[str, str]:
         """
-        Learn coverage bias patterns from aligned reads in a BAM file.
+        Apply coverage bias model to a sequence.
         
         Args:
-            bam_file: Path to BAM file with reads aligned to transcriptome
-            reference_file: Path to reference FASTA file
+            sequence: Input sequence string
+            quality: Quality string (same length as sequence)
+            target_length: Target length for the output sequence
             
         Returns:
-            bool: True if successful, False if failed
-        """
-        logger.info(f"Learning coverage bias model from BAM file: {bam_file}")
-        
-        # Check if pysam is available
-        if pysam is None:
-            logger.error("pysam library is required for BAM processing")
-            return False
-        
-        # Check if files exist
-        if not os.path.exists(bam_file):
-            logger.error(f"BAM file not found: {bam_file}")
-            return False
-        
-        if not os.path.exists(reference_file):
-            logger.error(f"Reference file not found: {reference_file}")
-            return False
-        
-        try:
-            # Load reference sequences
-            reference_seqs = {}
-            for record in SeqIO.parse(reference_file, "fasta"):
-                reference_seqs[record.id] = len(record.seq)
-            
-            if not reference_seqs:
-                logger.error(f"No sequences found in reference file: {reference_file}")
-                return False
-            
-            logger.info(f"Loaded {len(reference_seqs)} reference sequences")
-            
-            # Initialize arrays for start and end positions
-            start_positions = []
-            end_positions = []
-            
-            # Process aligned reads
-            with pysam.AlignmentFile(bam_file, "rb") as bam:
-                # Count reads per transcript
-                transcript_reads = {}
-                
-                for read in bam.fetch():
-                    if (read.is_unmapped or read.is_secondary or 
-                        read.is_supplementary or not read.reference_name):
-                        continue
-                    
-                    transcript = read.reference_name
-                    transcript_reads[transcript] = transcript_reads.get(transcript, 0) + 1
-                
-                # Process transcripts with sufficient coverage
-                for transcript, count in transcript_reads.items():
-                    if count < self.min_coverage or transcript not in reference_seqs:
-                        continue
-                    
-                    transcript_length = reference_seqs[transcript]
-                    if transcript_length == 0:
-                        continue
-                    
-                    # Process reads from this transcript
-                    for read in bam.fetch(transcript):
-                        if (read.is_unmapped or read.is_secondary or 
-                            read.is_supplementary):
-                            continue
-                        
-                        # Get normalized positions (0-1 range)
-                        start_norm = read.reference_start / transcript_length
-                        end_norm = read.reference_end / transcript_length
-                        
-                        start_positions.append(start_norm)
-                        end_positions.append(end_norm)
-            
-            if not start_positions or not end_positions:
-                logger.warning("No valid reads found for coverage modeling")
-                return self.learn_from_fastq("dummy.fastq")  # Fall back to synthetic model
-            
-            logger.info(f"Processed {len(start_positions)} reads for coverage modeling")
-            
-            # Create positional distributions
-            self._create_distributions(start_positions, end_positions)
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error learning coverage bias from BAM: {e}")
-            return False
-    
-    def learn_from_fastq(self, fastq_file: str) -> bool:
-        """
-        Create a synthetic coverage bias model when BAM alignment is not available.
-        
-        This creates a model with typical 5'-3' bias patterns observed in
-        long-read sequencing without requiring actual alignment data.
-        
-        Args:
-            fastq_file: Path to FASTQ file (only used for logging, not processed)
-            
-        Returns:
-            bool: True if successful
-        """
-        logger.info(f"Creating synthetic coverage bias model (no alignment available)")
-        
-        # Create synthetic positions with realistic biases
-        # - Start positions tend to favor 5' end 
-        # - End positions tend to favor 3' end
-        
-        # Parameters for beta distributions
-        start_alpha, start_beta = 1.5, 3.0  # Skewed toward 5' (smaller values)
-        end_alpha, end_beta = 4.0, 1.2      # Skewed toward 3' (larger values)
-        
-        # Generate synthetic positions
-        n_samples = 10000
-        start_positions = np.random.beta(start_alpha, start_beta, n_samples)
-        end_positions = np.random.beta(end_alpha, end_beta, n_samples)
-        
-        # Create distributions
-        self._create_distributions(start_positions, end_positions)
-        
-        logger.info("Created synthetic coverage bias model")
-        return True
-    
-    def _create_distributions(self, start_positions: List[float], 
-                             end_positions: List[float]) -> None:
-        """
-        Create normalized, smoothed distributions from position data.
-        
-        Args:
-            start_positions: List of normalized start positions (0-1)
-            end_positions: List of normalized end positions (0-1)
-        """
-        # Create histograms
-        start_hist, _ = np.histogram(start_positions, bins=self.bins, range=(0, 1), density=True)
-        end_hist, _ = np.histogram(end_positions, bins=self.bins, range=(0, 1), density=True)
-        
-        # Apply smoothing (add pseudocounts and smooth with running average)
-        start_smoothed = self._smooth_distribution(start_hist)
-        end_smoothed = self._smooth_distribution(end_hist)
-        
-        # Normalize to probability distributions
-        self.start_dist = start_smoothed / np.sum(start_smoothed)
-        self.end_dist = end_smoothed / np.sum(end_smoothed)
-        
-        self.has_model = True
-        
-        logger.info("Created positional distributions for coverage bias model")
-    
-    def _smooth_distribution(self, hist: np.ndarray) -> np.ndarray:
-        """
-        Apply smoothing to a distribution.
-        
-        Args:
-            hist: Input histogram to smooth
-            
-        Returns:
-            np.ndarray: Smoothed histogram
-        """
-        # Add pseudocounts to avoid zeros
-        smoothed = hist + (np.max(hist) * 0.01)
-        
-        # Apply moving average smoothing
-        window_size = max(3, int(self.bins * self.smoothing))
-        window = np.ones(window_size) / window_size
-        smoothed = np.convolve(smoothed, window, mode='same')
-        
-        return smoothed
-    
-    def plot_distributions(self, output_file: Optional[str] = None) -> bool:
-        """
-        Plot the coverage bias distributions.
-        
-        Args:
-            output_file: Path to save the plot (optional)
-            
-        Returns:
-            bool: True if successful, False if no model exists
+            Tuple[str, str]: Modified sequence and quality strings
         """
         if not self.has_model:
-            logger.warning("Cannot plot distributions: no model exists")
-            return False
+            # No model, just truncate to target length
+            return sequence[:target_length], quality[:target_length]
         
-        try:
-            # Create bin centers for x-axis
-            bin_edges = np.linspace(0, 1, self.bins + 1)
-            bin_centers = (bin_edges[1:] + bin_edges[:-1]) / 2
+        # Scale sequence to target length
+        if len(sequence) > target_length:
+            # Sample from transcript based on coverage model
+            coverage_model = self.coverage_data.mean().tolist()
+            keep_mask = sample_from_model(coverage_model, len(sequence))
             
-            # Create plot
-            plt.figure(figsize=(10, 6))
+            # Apply mask
+            new_seq = ''.join([s for s, keep in zip(sequence, keep_mask) if keep])
+            new_qual = ''.join([q for q, keep in zip(quality, keep_mask) if keep])
             
-            # Plot start distribution
-            plt.plot(bin_centers, self.start_dist, 'b-', linewidth=2, 
-                    label="Read start positions (5' bias)")
-            
-            # Plot end distribution
-            plt.plot(bin_centers, self.end_dist, 'r-', linewidth=2,
-                    label="Read end positions (3' bias)")
-            
-            # Add labels and legend
-            plt.xlabel('Normalized position along transcript (5\' to 3\')')
-            plt.ylabel('Probability density')
-            plt.title('Coverage Bias Model: 5\'-3\' Positional Bias')
-            plt.legend()
-            plt.grid(alpha=0.3)
-            
-            # Save plot if output file provided
-            if output_file:
-                plt.savefig(output_file, dpi=300)
-                logger.info(f"Coverage bias plot saved to {output_file}")
-            
-            plt.close()
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error plotting distributions: {e}")
-            return False
-    
-    def sample_read_position(self, transcript_length: int) -> Tuple[int, int]:
-        """
-        Sample read start and end positions based on the model.
-        
-        Args:
-            transcript_length: Length of the transcript
-            
-        Returns:
-            Tuple[int, int]: Start and end positions (0-based)
-        """
-        if not self.has_model:
-            # Fallback if no model exists
-            start_frac = random.uniform(0, 0.5)  # Slight 5' bias
-            end_frac = random.uniform(0.5, 1.0)  # Slight 3' bias
+            # Trim or pad to target length
+            if len(new_seq) > target_length:
+                new_seq = new_seq[:target_length]
+                new_qual = new_qual[:target_length]
+            elif len(new_seq) < target_length:
+                # Pad with Ns and low quality scores
+                new_seq += 'N' * (target_length - len(new_seq))
+                new_qual += '!' * (target_length - len(new_qual))
+                
+            return new_seq, new_qual
         else:
-            # Sample from distributions
-            start_bin = np.random.choice(self.bins, p=self.start_dist)
-            end_bin = np.random.choice(self.bins, p=self.end_dist)
-            
-            # Convert bin to fraction, with some noise within the bin
-            bin_width = 1.0 / self.bins
-            start_frac = (start_bin * bin_width) + (random.random() * bin_width)
-            end_frac = (end_bin * bin_width) + (random.random() * bin_width)
-        
-        # Ensure end is after start
-        if end_frac <= start_frac:
-            end_frac = start_frac + (random.random() * (1.0 - start_frac))
-        
-        # Convert to positions
-        start_pos = int(start_frac * transcript_length)
-        end_pos = int(end_frac * transcript_length)
-        
-        # Ensure valid positions
-        start_pos = max(0, min(start_pos, transcript_length - 1))
-        end_pos = max(start_pos + 1, min(end_pos, transcript_length))
-        
-        return start_pos, end_pos
-    
-    def apply_to_sequence(self, sequence: str, quality: str, 
-                         target_length: Optional[int] = None) -> Tuple[str, str]:
-        """
-        Apply coverage bias model to extract a realistic fragment from a sequence.
-        
-        Args:
-            sequence: Input sequence
-            quality: Quality string for the sequence
-            target_length: Target length for the output (optional)
-            
-        Returns:
-            Tuple[str, str]: Extracted sequence and quality fragments
-        """
-        # For very short sequences, return as-is
-        if len(sequence) < 50:
+            # Sequence is shorter than target, just return as is
             return sequence, quality
-        
-        # Get position based on length
-        seq_len = len(sequence)
-        start, end = self.sample_read_position(seq_len)
-        
-        # Apply target length if specified
-        if target_length is not None and target_length > 0:
-            current_len = end - start
-            
-            if current_len > target_length:
-                # Need to shorten
-                excess = current_len - target_length
-                start_adjust = int(excess * 0.5)
-                end_adjust = excess - start_adjust
-                
-                start += start_adjust
-                end -= end_adjust
-            
-            # Ensure valid range
-            start = max(0, start)
-            end = min(seq_len, end)
-        
-        # Extract fragment
-        fragment_seq = sequence[start:end]
-        fragment_qual = quality[start:end]
-        
-        return fragment_seq, fragment_qual
     
-    def save(self, filename: str) -> bool:
+    def plot_distributions(self, output_file: str) -> None:
         """
-        Save the model to a file.
+        Plot coverage distributions.
         
         Args:
-            filename: Path to save the model
-            
-        Returns:
-            bool: True if successful, False if no model exists
+            output_file: Path to output plot file
         """
         if not self.has_model:
-            logger.warning("Cannot save: no model exists")
-            return False
+            logger.warning("No coverage model to plot")
+            return
         
         try:
-            with open(filename, 'wb') as f:
-                pickle.dump({
-                    'bins': self.bins,
-                    'smoothing': self.smoothing,
-                    'min_coverage': self.min_coverage,
-                    'start_dist': self.start_dist,
-                    'end_dist': self.end_dist,
-                    'has_model': self.has_model
-                }, f)
+            # Create mean coverage profile
+            mean_profile = self.coverage_data.mean()
             
-            logger.info(f"Coverage bias model saved to {filename}")
-            return True
+            # Plot
+            plt.figure(figsize=(10, 6))
+            plt.plot(mean_profile.values)
+            plt.title('Mean Coverage Profile')
+            plt.xlabel('Transcript position (5\' to 3\')')
+            plt.ylabel('Relative coverage')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(output_file)
+            plt.close()
             
-        except Exception as e:
-            logger.error(f"Error saving model: {e}")
-            return False
+            logger.info(f"Coverage plot saved to {output_file}")
+            
+        except ImportError:
+            logger.warning("Matplotlib not installed, skipping plot generation")
+            
+
+class ReadLengthSampler:
+    """Class for sampling read lengths."""
     
-    @classmethod
-    def load(cls, filename: str) -> 'CoverageBiasModel':
-        """
-        Load a model from a file.
+    def __init__(self, lengths: List[int], seed: Optional[int] = None):
+        """Initialize the read length sampler."""
+        self.lengths = lengths
         
-        Args:
-            filename: Path to the model file
-            
-        Returns:
-            CoverageBiasModel: Loaded model
-            
-        Raises:
-            FileNotFoundError: If file does not exist
-            ValueError: If file is not a valid model
-        """
-        if not os.path.exists(filename):
-            raise FileNotFoundError(f"Model file not found: {filename}")
+        if seed is not None:
+            random.seed(seed)
+    
+    def sample(self) -> int:
+        """Sample a read length."""
+        return random.choice(self.lengths)
+
+
+def create_coverage_bias_model(
+    fastq_file: str,
+    reference_file: Optional[str] = None,
+    sample_size: int = 1000,
+    seed: Optional[int] = None
+) -> Tuple[ReadLengthSampler, CoverageBiasModel]:
+    """
+    Create coverage bias and read length models from a FASTQ file.
+    
+    Args:
+        fastq_file: Path to FASTQ file to sample reads from
+        reference_file: Path to reference FASTA file (optional)
+        sample_size: Number of reads to sample
+        seed: Random seed for reproducibility
         
-        try:
-            with open(filename, 'rb') as f:
-                data = pickle.load(f)
+    Returns:
+        Tuple[ReadLengthSampler, CoverageBiasModel]: Read length sampler and coverage bias model
+    """
+    logger.info(f"Creating coverage bias model from {fastq_file}")
+    
+    # Set random seed if provided
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+    
+    # Validate input files
+    validate_files(fastq_file, mode='r')
+    
+    # Sample read lengths from FASTQ
+    lengths = sample_read_lengths(fastq_file, sample_size)
+    length_sampler = ReadLengthSampler(lengths, seed=seed)
+    logger.info(f"Sampled {len(lengths)} read lengths (mean: {np.mean(lengths):.1f})")
+    
+    # Create coverage bias model
+    coverage_model = None
+    
+    # Return models
+    return length_sampler, CoverageBiasModel(coverage_model, seed=seed)
+
+
+def sample_read_lengths(fastq_file: str, sample_size: int = 1000) -> List[int]:
+    """
+    Sample read lengths from a FASTQ file.
+    
+    Args:
+        fastq_file: Path to FASTQ file
+        sample_size: Number of reads to sample
+        
+    Returns:
+        List[int]: List of read lengths
+    """
+    lengths = []
+    
+    try:
+        from Bio import SeqIO
+        
+        # Determine if gzipped
+        opener = open
+        if fastq_file.endswith('.gz'):
+            import gzip
+            opener = gzip.open
+        
+        # Sample read lengths
+        with opener(fastq_file, 'rt') as f:
+            records = SeqIO.parse(f, 'fastq')
             
-            model = cls(
-                bins=data['bins'],
-                smoothing=data['smoothing'],
-                min_coverage=data['min_coverage']
-            )
+            # Try to get total count for more efficient sampling
+            try:
+                # Count lines and divide by 4 for FASTQ
+                if not fastq_file.endswith('.gz'):
+                    with open(fastq_file, 'r') as count_f:
+                        line_count = sum(1 for _ in count_f)
+                    total_reads = line_count // 4
+                    
+                    # If sample size is more than half the total, just read all
+                    if sample_size > total_reads // 2:
+                        for record in records:
+                            lengths.append(len(record.seq))
+                        return lengths
+            except:
+                # Just proceed with normal sampling
+                pass
             
-            model.start_dist = data['start_dist']
-            model.end_dist = data['end_dist']
-            model.has_model = data['has_model']
-            
-            logger.info(f"Coverage bias model loaded from {filename}")
-            return model
-            
-        except Exception as e:
-            raise ValueError(f"Invalid model file: {e}")
+            # Sample records
+            count = 0
+            for record in records:
+                if random.random() < sample_size / (count + sample_size):
+                    if len(lengths) >= sample_size:
+                        # Replace a random element
+                        idx = random.randint(0, len(lengths) - 1)
+                        lengths[idx] = len(record.seq)
+                    else:
+                        lengths.append(len(record.seq))
+                count += 1
+                
+                # Stop after processing enough reads
+                if count >= sample_size * 100 and len(lengths) >= sample_size:
+                    break
+    except Exception as e:
+        logger.error(f"Error sampling read lengths: {e}")
+        
+    # Ensure we have at least some lengths
+    if not lengths:
+        logger.warning(f"Could not sample read lengths, using defaults")
+        lengths = [1000] * sample_size
+        
+    return lengths

@@ -1,0 +1,94 @@
+# Python-specific ignores
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+sirv_env/
+venv/
+ENV/
+env/
+.env
+
+# Testing and data files
+test_data/
+test_run/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Genomics/bioinformatics data
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.sam
+*.cram
+*.fasta
+*.fa
+*.fna
+*.gtf
+*.gff
+
+# Log files
+*.log
+logs/
+pipeline.log
+
+# Jupyter notebooks (uncommitted analysis)
+.ipynb_checkpoints
+*.ipynb
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Plots and reports (might be large and auto-generated)
+# Only uncomment if you don't want to commit example plots
+# test_data/evaluation/plots/
+# test_data/evaluation/diagnostics/
+# *.png
+# *.html
+
+# Keep example data
+!examples/**/*.fastq
+!examples/**/*.bam
+!examples/**/*.fa
+!examples/**/*.gtf
+!examples/**/*.csv
+
+# Configuration
+!.github/
+!.gitignore
+!.flake8
+!setup.cfg 

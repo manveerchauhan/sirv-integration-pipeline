@@ -21,9 +21,13 @@ def main():
     parser.add_argument('--sc_fastq', required=True, help='scRNA-seq FASTQ file')
     parser.add_argument('--sirv_reference', required=True, help='SIRV reference genome')
     parser.add_argument('--sirv_gtf', required=True, help='SIRV annotation GTF')
+    parser.add_argument('--reference_transcriptome', required=True, 
+                        help='Path to the reference transcriptome file')
+    parser.add_argument('--output_fastq', required=True, 
+                        help='Path to the output FASTQ file')
     parser.add_argument('--output_dir', default='./output', help='Output directory')
     parser.add_argument('--insertion_rate', type=float, default=0.01, 
-                      help='SIRV insertion rate (0-0.5)')
+                        help='SIRV insertion rate (0-0.5)')
     parser.add_argument('--threads', type=int, default=4, help='Number of threads')
     
     args = parser.parse_args()
@@ -53,15 +57,15 @@ def main():
     )
     
     # Step 2: Add SIRV reads to scRNA-seq dataset
-    output_fastq = os.path.join(args.output_dir, "combined_data.fastq")
     logger.info("Step 2: Adding SIRV reads to scRNA-seq dataset")
     
     output_fastq, tracking_file, expected_file = add_sirv_to_dataset(
         sirv_fastq=args.sirv_fastq,
         sc_fastq=args.sc_fastq,
         sirv_map_csv=transcript_map,
-        output_fastq=output_fastq,
-        insertion_rate=args.insertion_rate
+        output_fastq=args.output_fastq,
+        insertion_rate=args.insertion_rate,
+        reference_transcriptome=args.reference_transcriptome
     )
     
     logger.info(f"Output FASTQ: {output_fastq}")

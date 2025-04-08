@@ -1,37 +1,35 @@
 """
 Utility functions for the SIRV Integration Pipeline.
 
-This module provides helper functions for file handling,
-parameter validation, and other common tasks.
+This module provides helper functions for logging, validation,
+and dependency checking.
 """
 
 import os
 import sys
 import logging
 import subprocess
-from typing import Dict, List, Tuple, Optional, Union, Any
 
-# Configure logging
 def setup_logger(
-    name: str = "sirv_pipeline",
-    level: int = logging.INFO,
-    log_file: Optional[str] = None,
-    console: bool = True
+    log_file: str = None,
+    console_level: int = logging.INFO,
+    file_level: int = logging.DEBUG,
+    name: str = "sirv_pipeline"
 ) -> logging.Logger:
     """
     Set up a logger with file and/or console handlers.
     
     Args:
-        name: Logger name
-        level: Logging level
         log_file: Path to log file (optional)
-        console: Whether to log to console
+        console_level: Logging level for console output
+        file_level: Logging level for file output
+        name: Logger name
         
     Returns:
-        logging.Logger: Configured logger
+        logging.Logger: Configured logger instance
     """
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    logger.setLevel(min(console_level, file_level))  # Set to the more detailed level
     
     # Clear existing handlers
     for handler in logger.handlers[:]:
@@ -39,137 +37,29 @@ def setup_logger(
     
     # Create formatter
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        '%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
     # Add file handler if log_file is provided
     if log_file:
-        log_dir = os.path.dirname(os.path.abspath(log_file))
-        os.makedirs(log_dir, exist_ok=True)
-        
+        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
         file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(file_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     
-    # Add console handler if requested
-    if console:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
+    # Add console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
     
     return logger
 
 
-def check_external_tools() -> Dict[str, bool]:
-    """
-    Check if required external tools are available.
-    
-    Returns:
-        Dict[str, bool]: Dictionary of tool names and availability
-    """
-    tools = {
-        'minimap2': False,
-        'samtools': False
-    }
-    
-    for tool in tools:
-        try:
-            subprocess.run(['which', tool], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            tools[tool] = True
-        except subprocess.CalledProcessError:
-            pass
-    
-    return tools
-
-
-def check_file_exists(file_path: str) -> bool:
-    """
-    Check if a file exists and is readable.
-    
-    Args:
-        file_path: Path to file
-        
-    Returns:
-        bool: True if file exists and is readable
-    """
-    return os.path.isfile(file_path) and os.access(file_path, os.R_OK)
-
-
-def check_output_writable(file_path: str) -> bool:
-    """
-    Check if an output file path is writable.
-    
-    Args:
-        file_path: Path to output file
-        
-    Returns:
-        bool: True if output path is writable
-    """
-    output_dir = os.path.dirname(os.path.abspath(file_path))
-    
-    # Check if directory exists
-    if not os.path.exists(output_dir):
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-        except Exception:
-            return False
-    
-    # Check if directory is writable
-    return os.access(output_dir, os.W_OK)
-
-
-def get_file_size(file_path: str) -> int:
-    """
-    Get file size in bytes.
-    
-    Args:
-        file_path: Path to file
-        
-    Returns:
-        int: File size in bytes
-    """
-    if check_file_exists(file_path):
-        return os.path.getsize(file_path)
-    else:
-        return 0
-
-
-def human_readable_size(size_bytes: int) -> str:
-    """
-    Convert bytes to human-readable size string.
-    
-    Args:
-        size_bytes: Size in bytes
-        
-    Returns:
-        str: Human-readable size string
-    """
-    if size_bytes == 0:
-        return "0 B"
-    
-    units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    i = 0
-    while size_bytes >= 1024 and i < len(units) - 1:
-        size_bytes /= 1024
-        i += 1
-    
-    return f"{size_bytes:.2f} {units[i]}"
-
-
 def validate_insertion_rate(rate: float) -> float:
-    """
-    Validate insertion rate parameter.
-    
-    Args:
-        rate: Insertion rate
-        
-    Returns:
-        float: Validated insertion rate
-        
-    Raises:
-        ValueError: If rate is outside valid range
-    """
+    """Validate insertion rate parameter."""
     if rate <= 0:
         raise ValueError("Insertion rate must be positive")
     
@@ -180,31 +70,75 @@ def validate_insertion_rate(rate: float) -> float:
 
 
 def check_dependencies() -> bool:
-    """
-    Check if all required dependencies are available.
+    """Check if all required dependencies are available."""
+    # Define full paths to executables
+    tool_paths = {
+        'minimap2': "/apps/easybuild-2022/easybuild/software/Compiler/GCCcore/11.3.0/minimap2/2.26/bin/minimap2",
+        'samtools': "/apps/easybuild-2022/easybuild/software/Compiler/GCC/11.3.0/SAMtools/1.21/bin/samtools"
+    }
     
-    Returns:
-        bool: True if all dependencies are available
-    """
     # Check external tools
-    tools = check_external_tools()
-    missing_tools = [tool for tool, available in tools.items() if not available]
+    missing_tools = []
+    for tool, path in tool_paths.items():
+        if not os.path.exists(path) or not os.access(path, os.X_OK):
+            missing_tools.append(tool)
     
     if missing_tools:
         print(f"ERROR: Missing required tools: {', '.join(missing_tools)}")
-        print("Please install these tools and make sure they are in your PATH.")
+        print("Please load the appropriate modules or install these tools.")
         return False
     
     # Check Python dependencies
-    try:
-        import pandas
-        import numpy
-        import pysam
-        from Bio import SeqIO
-    except ImportError as e:
-        print(f"ERROR: Missing required Python dependencies: {e}")
+    missing_packages = []
+    required_packages = {
+        'pandas': 'pandas',
+        'numpy': 'numpy',
+        'pysam': 'pysam',
+        'Bio.SeqIO': 'biopython',
+        'matplotlib.pyplot': 'matplotlib'
+    }
+    
+    for module, package in required_packages.items():
+        try:
+            __import__(module.split('.')[0])
+        except ImportError:
+            missing_packages.append(package)
+    
+    if missing_packages:
+        print(f"ERROR: Missing required Python dependencies: {', '.join(missing_packages)}")
         print("Please install these packages using pip:")
-        print("  pip install pandas numpy pysam biopython")
+        print(f"  pip install {' '.join(missing_packages)}")
         return False
+    
+    return True
+
+
+def validate_files(*files, mode='r') -> bool:
+    """
+    Validate that files exist and have appropriate permissions.
+    
+    Args:
+        *files: List of file paths to validate
+        mode: 'r' for read access, 'w' for write access
+        
+    Returns:
+        bool: True if all files are valid
+        
+    Raises:
+        FileNotFoundError: If a file does not exist (for read mode)
+        PermissionError: If a file cannot be accessed with the requested mode
+    """
+    for file_path in files:
+        if mode == 'r':
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+            if not os.access(file_path, os.R_OK):
+                raise PermissionError(f"File is not readable: {file_path}")
+        elif mode == 'w':
+            # For write mode, check if directory is writable
+            dir_path = os.path.dirname(os.path.abspath(file_path))
+            os.makedirs(dir_path, exist_ok=True)
+            if not os.access(dir_path, os.W_OK):
+                raise PermissionError(f"Directory is not writable: {dir_path}")
     
     return True

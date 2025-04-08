@@ -11,17 +11,43 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Extracting SIRV reads from BAM file..."
 
-# Extract all reads aligned to SIRV regions
-samtools view -h "$BAM_FILE" "SIRV*" > "$OUTPUT_DIR/sirv_reads.sam"
+# Extract all reads aligned to SIRV regions and include transcript ID in FASTQ headers
+samtools view -h "$BAM_FILE" "SIRV*" | awk -F'\t' '{
+    read_id = $1;
+    ref_name = $3;
+    cigar = $6;
+    match_len = 0;
 
-# Convert SAM to sorted BAM
-samtools sort -o "$OUTPUT_DIR/sirv_reads.bam" "$OUTPUT_DIR/sirv_reads.sam"
-samtools index "$OUTPUT_DIR/sirv_reads.bam"
+    # Parse CIGAR string to get match length
+    while (cigar ~ /^[0-9]+[MIDNSHP=X]/) {
+        op_len = substr(cigar, 1, match(cigar, /[^0-9]/) - 1);
+        op_type = substr(cigar, match(cigar, /[^0-9]/), 1);
+        cigar = substr(cigar, match(cigar, /[^0-9]/) + 1);
 
-# Convert to FASTQ format
-samtools fastq "$OUTPUT_DIR/sirv_reads.bam" > "$OUTPUT_DIR/sirv_reads.fastq"
+        if (op_type == "M" || op_type == "=" || op_type == "X") {
+            match_len += op_len;
+        }
+    }
 
-# Extract mapping information
+    # Calculate read length (sum of all operations excluding H)
+    read_len = match_len;
+
+    # Extract transcript_id (use ref_name as transcript_id)
+    transcript_id = ref_name;  # Assuming ref_name corresponds to the transcript_id
+
+    # Output FASTQ header with transcript ID
+    print "@" read_id " " transcript_id;
+    print $10;  # Sequence
+    print "+";  # Plus separator
+    print $10;  # Quality score
+}' > "$OUTPUT_DIR/sirv_reads.fastq"
+
+# Convert SAM to sorted BAM and then to FASTQ (as in your original script)
+samtools sort -o "$OUTPUT_DIR/sirv_reads_sorted.bam" "$OUTPUT_DIR/sirv_reads.sam"
+samtools index "$OUTPUT_DIR/sirv_reads_sorted.bam"
+samtools fastq "$OUTPUT_DIR/sirv_reads_sorted.bam" > "$OUTPUT_DIR/sirv_reads.fastq"
+
+# Extract mapping information to generate the CSV (same as in your original script)
 echo "read_id,sirv_transcript,overlap_fraction,read_length,alignment_length" > "$OUTPUT_DIR/sirv_transcript_map.csv"
 samtools view "$OUTPUT_DIR/sirv_reads.bam" | awk -F'\t' '{
     read_id = $1;
