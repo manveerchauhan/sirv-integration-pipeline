@@ -83,6 +83,19 @@ def create_alignment(
             logger.error(f"Samtools view failed with return code {samtools_return_code}")
             return False
         
+        # Sort the BAM file before indexing
+        sorted_bam = output_bam + ".sorted.bam"
+        logger.info("Sorting BAM file")
+        sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, output_bam]
+        sort_result = subprocess.run(sort_cmd, check=True)
+        
+        if sort_result.returncode != 0:
+            logger.error(f"Samtools sort failed with return code {sort_result.returncode}")
+            return False
+            
+        # Replace the original BAM with the sorted one
+        os.replace(sorted_bam, output_bam)
+        
         # Index the BAM file
         logger.info("Indexing BAM file")
         subprocess.run([SAMTOOLS_PATH, "index", output_bam], check=True)
@@ -413,6 +426,15 @@ def process_sirv_bams(
                     logger.info(f"Copying BAM index to: {merged_bam_index}")
                     shutil.copy2(bam_index, merged_bam_index)
                 else:
+                    # Sort the BAM file before indexing if no index exists
+                    sorted_bam = merged_bam + ".sorted.bam"
+                    logger.info(f"Sorting BAM file: {merged_bam}")
+                    sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
+                    subprocess.run(sort_cmd, check=True)
+                    
+                    # Replace the original BAM with the sorted one
+                    os.replace(sorted_bam, merged_bam)
+                    
                     # Index the BAM file
                     logger.info(f"Indexing BAM file: {merged_bam}")
                     subprocess.run([SAMTOOLS_PATH, "index", merged_bam], check=True)
@@ -425,8 +447,16 @@ def process_sirv_bams(
             merge_cmd = [SAMTOOLS_PATH, "merge", "-f", "-@", str(threads), merged_bam] + bam_files
             subprocess.run(merge_cmd, check=True)
             
-            # Index the merged BAM file
-            logger.info(f"Indexing merged BAM file: {merged_bam}")
+            # Sort the BAM file before indexing
+            sorted_bam = merged_bam + ".sorted.bam"
+            logger.info(f"Sorting BAM file: {merged_bam}")
+            sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
+            subprocess.run(sort_cmd, check=True)
+            
+            # Replace the original BAM with the sorted one
+            os.replace(sorted_bam, merged_bam)
+            
+            logger.info(f"Indexing BAM file: {merged_bam}")
             subprocess.run([SAMTOOLS_PATH, "index", merged_bam], check=True)
         
         # Load transcript info from GTF

@@ -143,7 +143,7 @@ def create_synthetic_sirv_data(sirv_fastq, sirv_reference, sirv_gtf):
         "SIRV1": "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
         "SIRV2": "TGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA",
         "SIRV3": "GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA",
-        "SIRV4": "GATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC",
+        "SIRV4": "GATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATC",
         "SIRV5": "CGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCGCG"
     }
     
@@ -211,7 +211,7 @@ def create_synthetic_sc_data(sc_fastq):
                     f.write(f"{qual}\n")
                     read_id += 1
 
-def run_integration_pipeline():
+def run_legacy_pipeline():
     """Run the existing test pipeline to generate integrated FASTQ."""
     try:
         subprocess.run(["python", "run_test_pipeline.py"], check=True)
@@ -521,7 +521,7 @@ def parse_arguments():
     return parser.parse_args()
 
 def run_complete_pipeline():
-    """Run the complete pipeline, including integration and evaluation."""
+    """Run the complete test pipeline from integration to evaluation."""
     # Parse arguments
     args = parse_arguments()
     

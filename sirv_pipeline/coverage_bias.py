@@ -390,7 +390,11 @@ class CoverageBiasModel:
         for i, (bin_idx, dist) in enumerate(sorted(self.length_dependent_distributions.items())):
             x, y = dist
             if bin_idx < len(self.length_bins) - 1:
-                label = f'{int(self.length_bins[bin_idx])}-{int(self.length_bins[bin_idx+1])} nt'
+                # Check if upper bound is infinity
+                if np.isinf(self.length_bins[bin_idx+1]):
+                    label = f'>{int(self.length_bins[bin_idx])} nt'
+                else:
+                    label = f'{int(self.length_bins[bin_idx])}-{int(self.length_bins[bin_idx+1])} nt'
             else:
                 label = f'>{int(self.length_bins[bin_idx])} nt'
             
