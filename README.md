@@ -274,16 +274,16 @@ flowchart TD
     EVAL --> REPORT["Generate Evaluation Reports & Visualizations"]
     
     %% Style nodes by type
-    style SIRV fill:#8DD3C7,stroke:#333,stroke-width:2px
-    style SC fill:#8DD3C7,stroke:#333,stroke-width:2px
-    style MAP fill:#BEBADA,stroke:#333,stroke-width:2px
-    style TRANS fill:#BEBADA,stroke:#333,stroke-width:2px
-    style CELL fill:#BEBADA,stroke:#333,stroke-width:2px
-    style COV fill:#BEBADA,stroke:#333,stroke-width:2px
-    style INT fill:#BEBADA,stroke:#333,stroke-width:2px
-    style EVAL fill:#BEBADA,stroke:#333,stroke-width:2px
-    style COMB fill:#FB8072,stroke:#333,stroke-width:2px
-    style REPORT fill:#FB8072,stroke:#333,stroke-width:2px
+    style SIRV fill:#8DD3C7,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style SC fill:#8DD3C7,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style MAP fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style TRANS fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style CELL fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style COV fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style INT fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style EVAL fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style COMB fill:#FB8072,stroke:#333,stroke-width:2px,color:black,font-weight:bold
+    style REPORT fill:#FB8072,stroke:#333,stroke-width:2px,color:black,font-weight:bold
 ```
 
 The pipeline integrates SIRV reads into scRNA-seq data with proper cell barcodes and UMIs, enabling accurate benchmarking of transcript identification and quantification tools. The coverage bias modeling ensures realistic read characteristics that match the original dataset.
