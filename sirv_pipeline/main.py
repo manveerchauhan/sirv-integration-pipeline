@@ -12,7 +12,7 @@ import logging
 import pandas as pd
 from typing import Dict, List, Optional, Union
 
-from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam
+from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam, create_simple_gtf_from_fasta, parse_transcripts_from_gtf
 from sirv_pipeline.coverage_bias import model_transcript_coverage, CoverageBiasModel
 from sirv_pipeline.integration import add_sirv_to_dataset
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     integration_group.add_argument(
         "--sirv-gtf", type=str,
-        help="Path to SIRV GTF annotation file"
+        help="Path to SIRV GTF annotation file (optional - will be auto-generated if not provided)"
     )
     integration_group.add_argument(
         "--sc-fastq", type=str,
@@ -144,8 +144,8 @@ def parse_args() -> argparse.Namespace:
     
     # Check required arguments for integration mode
     if args.integration:
-        if not all([args.sirv_reference, args.sirv_gtf, args.sc_fastq]):
-            parser.error("Integration mode requires --sirv-reference, --sirv-gtf, and --sc-fastq")
+        if not all([args.sirv_reference, args.sc_fastq]):
+            parser.error("Integration mode requires --sirv-reference and --sc-fastq")
         
         # Ensure either --sirv-fastq or --sirv-bam is provided but not both
         if not (args.sirv_fastq or args.sirv_bam):
@@ -178,10 +178,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     
     # Set up logger
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    setup_logger(args.log_file, console_level=log_level, file_level=logging.DEBUG)
+    logger = setup_logger(args.log_file, console_level=log_level, file_level=logging.DEBUG)
     
     # Get logger
-    logger = logging.getLogger(__name__)
     logger.info("Starting SIRV Integration Pipeline")
     
     # Check dependencies
@@ -206,6 +205,26 @@ def run_pipeline(args: argparse.Namespace) -> None:
         
         # Define alignment file path
         alignment_file = os.path.join(args.output_dir, "sirv_alignment.bam")
+        
+        # Check if GTF file is provided, if not or invalid, create one from FASTA
+        if not args.sirv_gtf:
+            logger.info("No GTF file provided, generating from FASTA reference")
+            auto_gtf = os.path.join(args.output_dir, "auto_generated_reference.gtf")
+            args.sirv_gtf = create_simple_gtf_from_fasta(args.sirv_reference, auto_gtf)
+        else:
+            # Validate the provided GTF
+            try:
+                transcripts = parse_transcripts_from_gtf(args.sirv_gtf)
+                if not transcripts:
+                    logger.warning(f"No transcripts found in provided GTF: {args.sirv_gtf}")
+                    logger.info("Generating compatible GTF file from FASTA reference")
+                    auto_gtf = os.path.join(args.output_dir, "auto_generated_reference.gtf")
+                    args.sirv_gtf = create_simple_gtf_from_fasta(args.sirv_reference, auto_gtf)
+            except Exception as e:
+                logger.warning(f"Error parsing GTF file: {e}")
+                logger.info("Generating compatible GTF file from FASTA reference")
+                auto_gtf = os.path.join(args.output_dir, "auto_generated_reference.gtf")
+                args.sirv_gtf = create_simple_gtf_from_fasta(args.sirv_reference, auto_gtf)
         
         # Check if we need to create a combined reference
         combined_reference = None
@@ -294,9 +313,14 @@ def run_pipeline(args: argparse.Namespace) -> None:
         
         # Check if we have any mapped SIRV reads before proceeding
         if os.path.exists(transcript_map_file) and os.path.getsize(transcript_map_file) > 0:
-            sirv_map_df = pd.read_csv(transcript_map_file)
-            if sirv_map_df.empty:
-                logger.warning("No SIRV reads were mapped to transcripts. Skipping integration.")
+            try:
+                sirv_map_df = pd.read_csv(transcript_map_file)
+                if sirv_map_df.empty:
+                    logger.warning("No SIRV reads were mapped to transcripts. Skipping integration.")
+                    logger.info(f"Integration completed with warnings. Output files in {args.output_dir}")
+                    return
+            except pd.errors.EmptyDataError:
+                logger.warning("Transcript mapping file is empty. Skipping integration.")
                 logger.info(f"Integration completed with warnings. Output files in {args.output_dir}")
                 return
         
@@ -339,7 +363,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         compare_with_flames(
             expected_file=args.expected_file,
             flames_output=args.flames_output,
-            comparison_file=comparison_file
+            output_file=comparison_file
         )
         
         # Generate evaluation report
@@ -349,9 +373,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         
         generate_report(
             comparison_file=comparison_file,
-            tracking_file=args.expected_file,
-            plots_dir=plots_dir,
-            report_file=report_file
+            output_html=report_file
         )
         
         logger.info(f"Evaluation completed. Results in {args.output_dir}")

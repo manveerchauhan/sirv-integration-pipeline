@@ -486,3 +486,46 @@ def process_sirv_bams(
         # Clean up temporary directory
         logger.debug(f"Removing temporary directory: {temp_dir}")
         shutil.rmtree(temp_dir)
+
+# Modification to create_simple_gtf_from_fasta function
+def create_simple_gtf_from_fasta(fasta_file, output_gtf):
+    """Create a simple GTF file from a FASTA reference file."""
+    import pysam
+    import os
+    import subprocess
+    import shutil
+    
+    logger.info(f"Creating simple GTF file from FASTA: {fasta_file}")
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(os.path.abspath(output_gtf))
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create a local copy of the FASTA in the output directory
+    local_fasta = os.path.join(output_dir, "local_reference.fa")
+    shutil.copy2(fasta_file, local_fasta)
+    
+    # Index the local copy
+    logger.info(f"Indexing local copy of FASTA file: {local_fasta}")
+    pysam.faidx(local_fasta)
+    
+    # Create GTF file
+    with open(output_gtf, 'w') as gtf:
+        # Write header
+        gtf.write('##gff-version 3\n')
+        
+        # Read FASTA index
+        with open(f"{local_fasta}.fai", 'r') as fai:
+            for line in fai:
+                fields = line.strip().split('\t')
+                seq_id = fields[0]
+                seq_length = fields[1]
+                
+                # Write transcript feature
+                gtf.write(f"{seq_id}\tSIRV\ttranscript\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+                
+                # Write exon feature
+                gtf.write(f"{seq_id}\tSIRV\texon\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+    
+    logger.info(f"Created GTF file: {output_gtf}")
+    return output_gtf
