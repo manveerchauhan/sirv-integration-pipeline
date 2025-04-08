@@ -153,21 +153,6 @@ This script will:
 3. Simulate FLAMES output
 4. Generate evaluation reports and visualizations
 
-For quicker testing of just the integration portion, you can use:
-
-```bash
-python run_test_pipeline.py
-```
-
-However, the complete test is recommended as it provides more thorough validation.
-
-### Adding New Features
-
-1. Implement new functionality in appropriate modules under `sirv_pipeline/`
-2. Update `main.py` to expose new features via CLI
-3. Add tests for new functionality
-4. Update documentation in this README
-
 ### HPC Usage
 
 For large datasets, use the provided SLURM script:
