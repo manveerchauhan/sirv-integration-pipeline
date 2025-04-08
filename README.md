@@ -62,7 +62,7 @@ cd sirv-integration-pipeline
 pip install .
 ```
 
-Dependencies: Python 3.7+, numpy, pandas, matplotlib, jinja2, minimap2, samtools
+Dependencies: Python 3.7+, numpy, pandas, matplotlib, seaborn, jinja2, minimap2, samtools
 
 ## Usage
 
@@ -75,7 +75,7 @@ sirv-pipeline --integration \
     --sirv-reference sirv_genome.fa \
     --sirv-gtf sirv_annotation.gtf \
     --output-dir ./output \
-    --insertion-rate 0.1
+    --insertion-rate 0.01
 ```
 
 ### With Combined References
@@ -130,7 +130,7 @@ sirv-pipeline --evaluation \
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--output-dir DIR` | Output directory | `./output` |
-| `--insertion-rate FLOAT` | SIRV insertion rate (0-1) | `0.1` |
+| `--insertion-rate FLOAT` | SIRV insertion rate (0-1) | `0.01` |
 | `--threads INT` | Number of threads | `8` |
 | `--non-sirv-reference FILE` | Path to genome reference | None |
 | `--create-combined-reference` | Create combined reference | False |
@@ -140,17 +140,26 @@ sirv-pipeline --evaluation \
 
 ### Running Tests
 
-The repository includes test scripts to verify functionality:
+The repository includes a comprehensive test script:
 
 ```bash
-# Run basic pipeline test with synthetic data
-python run_test_pipeline.py
-
-# Run complete test (integration + evaluation)
+# Run the complete test (integration + evaluation)
 python run_complete_test.py
 ```
 
-Test scripts will generate synthetic SIRV and scRNA-seq data in the `test_data/` directory.
+This script will:
+1. Generate synthetic SIRV and scRNA-seq data in the `test_data/` directory
+2. Run the integration pipeline
+3. Simulate FLAMES output
+4. Generate evaluation reports and visualizations
+
+For quicker testing of just the integration portion, you can use:
+
+```bash
+python run_test_pipeline.py
+```
+
+However, the complete test is recommended as it provides more thorough validation.
 
 ### Adding New Features
 

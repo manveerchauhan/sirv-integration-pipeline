@@ -21,11 +21,12 @@ setup(
     ],
     python_requires=">=3.7",
     install_requires=[
-        "numpy>=1.19.0",
-        "pandas>=1.1.0",
+        "numpy>=1.20.0",
+        "pandas>=1.3.0",
         "pysam>=0.16.0",
         "biopython>=1.78",
-        "matplotlib>=3.3.0",
+        "matplotlib>=3.5.0",
+        "seaborn>=0.11.0",
         "jinja2>=3.0.0",
     ],
     entry_points={
