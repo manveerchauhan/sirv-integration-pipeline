@@ -30,13 +30,13 @@ pip install .
 ## Dependencies
 
 - Python 3.7+
-- numpy, pandas, matplotlib, jinja2
+- numpy, pandas, matplotlib, jinja2, seaborn
 - External tools: minimap2, samtools
 
 You can install the Python dependencies via pip:
 
 ```bash
-pip install numpy pandas matplotlib jinja2
+pip install numpy pandas matplotlib jinja2 seaborn
 ```
 
 For minimap2 and samtools, follow their installation instructions or use conda:
