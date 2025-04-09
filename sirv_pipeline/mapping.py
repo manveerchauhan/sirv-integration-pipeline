@@ -350,8 +350,9 @@ def extract_fastq_from_bam(bam_file: str, output_fastq: str) -> str:
         
         logger.info(f"Extracting FASTQ from BAM: {bam_file}")
         
-        # Run samtools fastq to extract reads
-        cmd = [SAMTOOLS_PATH, "fastq", bam_file, "-o", output_fastq]
+        # Run samtools fastq to extract reads with modified parameters
+        # Adding -0 to write all reads and -n to use read names from the BAM file
+        cmd = [SAMTOOLS_PATH, "fastq", "-0", output_fastq, "-n", bam_file]
         
         subprocess.run(cmd, check=True)
         
