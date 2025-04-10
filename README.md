@@ -1,227 +1,199 @@
-# SIRV Integration Pipeline for Long-Read scRNA-seq
+# SIRV Integration Pipeline
 
-A pipeline for integrating SIRV spike-in reads into existing scRNA-seq datasets to benchmark isoform discovery tools.
+A pipeline for integrating SIRV (Spike-In RNA Variant) reads into single-cell RNA-seq datasets for benchmarking and quality control.
 
 ## Overview
 
-This pipeline creates semi-synthetic benchmarking datasets by adding SIRV (Spike-In RNA Variant) reads to existing single-cell RNA-seq data. It provides ground truth for evaluating transcript discovery and quantification tools like FLAMES.
+The SIRV Integration Pipeline allows researchers to add SIRV spike-in reads to single-cell RNA sequencing datasets with realistic coverage bias. This enables more accurate benchmarking of scRNA-seq analysis tools and quality assessment of sequencing data.
 
-## Pipeline Schematic
+![Pipeline Overview](pipeline_overview.png)
 
-```mermaid
-flowchart TD
-    %% Input files
-    SIRV["SIRV Reads (FASTQ/BAM)"] 
-    SC["scRNA-seq Reads (FASTQ)"]
-    
-    %% Processing steps - left branch
-    SIRV --> MAP["Map to SIRV Reference"]
-    MAP --> TRANS["Transcript Assignment"]
-    
-    %% Processing steps - right branch
-    SC --> CELL["Extract Cell Barcodes & UMIs"]
-    CELL --> COV["Model Coverage Bias"]
-    
-    %% Integration
-    TRANS --> INT["Integrate SIRV Reads with Cell Barcodes & UMIs"]
-    COV --> INT
-    
-    %% Output
-    INT --> COMB["Combined FASTQ with Ground Truth Tracking"]
-    
-    %% Evaluation (optional)
-    COMB --> EVAL["Evaluate with FLAMES (Optional)"]
-    EVAL --> REPORT["Generate Evaluation Reports & Visualizations"]
-    
-    %% Style nodes by type
-    style SIRV fill:#8DD3C7,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style SC fill:#8DD3C7,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style MAP fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style TRANS fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style CELL fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style COV fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style INT fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style EVAL fill:#BEBADA,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style COMB fill:#FB8072,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-    style REPORT fill:#FB8072,stroke:#333,stroke-width:2px,color:black,font-weight:bold
-```
+## Features
 
-## Key Features
-
-- Maps SIRV reads to reference to identify transcripts of origin
-- Adds cell barcodes and UMIs to SIRV reads for single-cell analysis
-- Models read length distributions and 5'-3' coverage bias
-- Supports sophisticated coverage bias modeling for different sequencing technologies
-- Generates tracking information for benchmarking
-- Supports both FASTQ and BAM files as SIRV input
+- **SIRV Integration**: Add SIRV reads to scRNA-seq datasets with controlled insertion rates
+- **Coverage Bias Modeling**: Learn coverage bias patterns from real data and apply to integrated reads
+- **Multi-source Input**: Support for BAM and FASTQ inputs
+- **Resumable Processing**: Automatically resume from the last successful step if interrupted
+- **Custom Coverage Models**: Learn coverage bias patterns from FLAMES output for more accurate modeling
+- **Pipeline State Tracking**: Keep track of completed steps for easy resumption and monitoring
 
 ## Installation
 
-```bash
-git clone https://github.com/manveerchauhan/sirv-integration-pipeline.git
-cd sirv-integration-pipeline
-pip install .
-```
+### Prerequisites
 
-Dependencies: Python 3.7+, numpy, pandas, matplotlib, seaborn, jinja2, minimap2, samtools, scipy, gffutils, pysam
+- Python 3.8+
+- Samtools
+- Minimap2
+- Pandas, NumPy, Matplotlib, and other Python dependencies
+
+### Setup
+
+1. Clone this repository:
+   ```bash
+   git clone <repository-url>
+   cd sirv-integration-pipeline
+   ```
+
+2. Create a Python virtual environment:
+   ```bash
+   python -m venv sirv_env
+   source sirv_env/bin/activate
+   ```
+
+3. Install the package:
+   ```bash
+   pip install -e .
+   ```
 
 ## Usage
 
-### Basic Integration
+### Basic Usage
+
+Run the pipeline with the provided scripts:
 
 ```bash
-sirv-pipeline --integration \
-    --sirv-fastq sirv_reads.fastq \
-    --sc-fastq scRNA_data.fastq \
-    --sirv-reference sirv_genome.fa \
-    --sirv-gtf sirv_annotation.gtf \
-    --output-dir ./output \
-    --insertion-rate 0.01
-```
-
-### With Coverage Bias Modeling
-
-```bash
-sirv-pipeline --integration \
-    --sirv-fastq sirv_reads.fastq \
-    --sc-fastq scRNA_data.fastq \
-    --sirv-reference sirv_genome.fa \
-    --sirv-gtf sirv_annotation.gtf \
-    --coverage-model 10x_cdna \
+# Using the main entry point
+python run_sirv_pipeline.py --integration \
+    --output-dir /path/to/output \
+    --sirv-bam /path/to/sirv.bam \
+    --sirv-reference /path/to/reference.fa \
+    --sirv-gtf /path/to/annotation.gtf \
     --visualize-coverage \
-    --output-dir ./output
+    --verbose
+
+# Or run as a Python module
+python -m sirv_pipeline --integration \
+    --output-dir /path/to/output \
+    --sirv-bam /path/to/sirv.bam \
+    --sirv-reference /path/to/reference.fa \
+    --sirv-gtf /path/to/annotation.gtf
 ```
 
-### Learning Coverage Bias from Data
+### Using FLAMES Output for Coverage Modeling
+
+To use FLAMES output for more accurate coverage modeling:
 
 ```bash
-sirv-pipeline --integration \
-    --sirv-fastq sirv_reads.fastq \
-    --sc-fastq scRNA_data.fastq \
-    --sirv-reference sirv_genome.fa \
-    --sirv-gtf sirv_annotation.gtf \
-    --learn-coverage-from aligned_reads.bam \
-    --min-reads 100 \
+python run_sirv_pipeline.py --integration \
+    --output-dir /path/to/output \
+    --sirv-bam /path/to/sirv.bam \
+    --sirv-reference /path/to/reference.fa \
+    --sirv-gtf /path/to/annotation.gtf \
+    --learn-coverage-from /path/to/flames/realign2transcript.bam \
+    --flames-gtf /path/to/flames/isoform_annotated.gtf \
+    --coverage-model custom \
+    --min-reads 50 \
     --length-bins 5 \
-    --visualize-coverage \
-    --output-dir ./output
-```
-
-### With Combined References
-
-```bash
-sirv-pipeline --integration \
-    --sirv-fastq sirv_reads.fastq \
-    --sc-fastq scRNA_data.fastq \
-    --sirv-reference sirv_genome.fa \
-    --sirv-gtf sirv_annotation.gtf \
-    --non-sirv-reference genome.fa \
-    --create-combined-reference \
-    --output-dir ./output
-```
-
-### Using BAM Input
-
-```bash
-sirv-pipeline --integration \
-    --sirv-bam sirv_reads.bam \
-    --sc-fastq scRNA_data.fastq \
-    --sirv-reference sirv_genome.fa \
-    --sirv-gtf sirv_annotation.gtf \
-    --output-dir ./output
-```
-
-### Evaluation Mode
-
-```bash
-sirv-pipeline --evaluation \
-    --expected-file ./output/tracking.csv \
-    --flames-output flames_counts.csv \
-    --output-dir ./evaluation
-```
-
-## Output Files
-
-### Integration Mode
-- `integrated.fastq`: FASTQ with SIRV reads added to scRNA-seq data
-- `transcript_map.csv`: Mapping of SIRV reads to transcripts
-- `coverage_model.json`: Serialized coverage bias model
-- `coverage_bias.png`: Visualization of coverage bias distributions
-- `tracking.csv`: Tracking information for inserted reads
-
-### Evaluation Mode
-- `comparison.csv`: Expected vs. observed SIRV counts
-- `plots/`: Evaluation plots (correlation, detection rate, transcript detection)
-- `report.html`: Summary report
-- `diagnostics/`: Additional visualizations
-
-## Advanced Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--output-dir DIR` | Output directory | `./output` |
-| `--insertion-rate FLOAT` | SIRV insertion rate (0-1) | `0.01` |
-| `--threads INT` | Number of threads | `8` |
-| `--non-sirv-reference FILE` | Path to genome reference | None |
-| `--create-combined-reference` | Create combined reference | False |
-| `--coverage-model TYPE` | Coverage bias model type | `10x_cdna` |
-| `--learn-coverage-from BAM` | Learn bias from BAM file | None |
-| `--min-reads INT` | Min reads for bias learning | `100` |
-| `--length-bins INT` | Transcript length bins | `5` |
-| `--visualize-coverage` | Generate bias visualizations | False |
-| `--disable-coverage-bias` | Disable bias modeling | False |
-| `--seed INT` | Random seed | None |
-| `--verbose` | Enable verbose logging | False |
-
-## Coverage Bias Models
-
-The pipeline includes sophisticated coverage bias modeling to accurately represent the non-uniform distribution of reads across transcripts:
-
-### Predefined Models
-
-- **10x_cdna**: Models the 3' bias typical in 10X Chromium cDNA libraries
-- **direct_rna**: Models the 5' bias typically seen in direct RNA sequencing
-- **custom**: Custom bias pattern that can be learned from existing data
-
-### Learning from Data
-
-The coverage bias model can be trained on your own BAM files to capture technology-specific biases:
-
-```bash
-sirv-pipeline --integration \
-    --learn-coverage-from aligned_reads.bam \
-    --length-bins 5 \
-    --min-reads 100 \
     --visualize-coverage
 ```
 
-## Development
+### Resuming Pipeline Execution
 
-### Running Tests
-
-The repository includes a comprehensive test script:
+Use the `resume_pipeline.sh` script to easily resume a failed or interrupted pipeline run:
 
 ```bash
-# Run the complete test (integration + evaluation)
-python run_complete_test.py
+# Resume from the last successful step
+./resume_pipeline.sh /path/to/output_dir
+
+# Restart the pipeline from the beginning
+./resume_pipeline.sh -r /path/to/output_dir
+
+# Force rerun all steps and submit as SLURM job
+./resume_pipeline.sh -f -s /path/to/output_dir
+
+# Use settings from a previous job with a new output directory
+./resume_pipeline.sh -j 12345 /path/to/new_output_dir
 ```
 
-This script will:
-1. Generate synthetic SIRV and scRNA-seq data in the `test_data/` directory
-2. Run the integration pipeline
-3. Simulate FLAMES output
-4. Generate evaluation reports and visualizations
+### Running on SLURM
 
-### HPC Usage
-
-For large datasets, use the provided SLURM script:
+Submit as a SLURM job:
 
 ```bash
 sbatch sirv_integration_pipeline.slurm
 ```
 
-Modify the script parameters in the header section as needed.
+Or use the resume script with the `-s` flag:
 
-## Contact
+```bash
+./resume_pipeline.sh -s /path/to/output_dir
+```
 
-Questions or suggestions: mschauhan@student.unimelb.edu.au
+## Pipeline Workflow
+
+1. **Prepare SIRV Reference**: Index and prepare SIRV reference files
+2. **Process SIRV Reads**: Process SIRV BAM or FASTQ files
+3. **Learn Coverage Bias**: Model coverage bias from FLAMES or other data
+4. **Integrate SIRV Reads**: Add SIRV reads to scRNA-seq dataset with modeled coverage bias
+5. **Generate Reports**: Create visualizations and reports
+
+## Advanced Options
+
+```
+Usage: python run_sirv_pipeline.py [options]
+
+Mode Selection:
+  --integration          Run in integration mode to add SIRV reads to scRNA-seq dataset
+  --evaluation           Run in evaluation mode to compare with FLAMES output
+
+Integration Mode:
+  --sirv-fastq SIRV_FASTQ
+                        Path to SIRV FASTQ file
+  --sirv-bam SIRV_BAM [SIRV_BAM ...]
+                        Path to SIRV BAM file(s) (can specify multiple files)
+  --sirv-reference SIRV_REFERENCE
+                        Path to SIRV reference FASTA file
+  --sirv-gtf SIRV_GTF   Path to SIRV GTF annotation file (optional - will be auto-generated if not provided)
+  --sc-fastq SC_FASTQ   Path to single-cell FASTQ file
+  --insertion-rate INSERTION_RATE
+                        SIRV insertion rate (0-1, default: 0.1)
+
+Coverage Bias Modeling:
+  --coverage-model {10x_cdna,direct_rna,custom,default}
+                        Type of coverage bias model to use (default: 10x_cdna)
+  --learn-coverage-from LEARN_COVERAGE_FROM
+                        Learn coverage bias from BAM file
+  --flames-gtf FLAMES_GTF
+                        FLAMES GTF annotation file to use with the FLAMES BAM for coverage modeling
+  --visualize-coverage  Generate coverage bias visualizations
+  --min-reads MIN_READS
+                        Minimum reads required for bias learning (default: 100)
+  --length-bins LENGTH_BINS
+                        Number of transcript length bins (default: 5)
+  --disable-coverage-bias
+                        Disable coverage bias modeling
+
+Common Settings:
+  --output-dir OUTPUT_DIR
+                        Path to output directory (default: ./output)
+  --threads THREADS     Number of threads for parallel processing (default: 8)
+  --seed SEED           Random seed for reproducibility
+  --verbose             Enable verbose logging
+```
+
+## Output Files
+
+- `pipeline_state.json`: Current state of the pipeline execution
+- `sirv_alignment.bam`: Processed SIRV alignment
+- `transcript_map.csv`: Mapping of SIRV transcripts
+- `coverage_model.pkl`: Learned coverage bias model
+- `integrated_reads.fastq`: Final integrated reads (when using scRNA-seq input)
+- `plots/`: Coverage bias and other visualizations
+- `pipeline.log`: Detailed execution log
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. Check the log file in your output directory: `pipeline.log`
+2. Ensure all input files exist and are properly formatted
+3. For SLURM jobs, check the job output files: `sirv_integration_JOBID.out` and `sirv_integration_JOBID.err`
+4. Try running with the `--verbose` flag for more detailed logging
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## References
+
+For more information on SIRV spike-ins, visit [Lexogen's SIRV website](https://www.lexogen.com/sirvs/).

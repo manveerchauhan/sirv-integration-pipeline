@@ -1,68 +1,40 @@
 """
 SIRV Integration Pipeline
 
-A pipeline for integrating SIRV spike-in reads into existing scRNA-seq datasets
-to benchmark isoform discovery tools.
+The SIRV Integration Pipeline is a tool for integrating SIRV reads into
+single-cell RNA-seq datasets for benchmarking and analysis purposes.
+
+Main components:
+- Integration: Add SIRV reads to scRNA-seq datasets
+- Coverage Bias: Model and simulate transcript coverage bias
+- Evaluation: Compare with FLAMES output
 """
 
 # Version
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-# Import main modules
-from sirv_pipeline.mapping import (
-    map_sirv_reads,
-    create_alignment,
-    process_sirv_bams,
-    extract_fastq_from_bam
-)
+# Import main functionality
+from sirv_pipeline.main import run_pipeline, parse_args, setup_logger
+from sirv_pipeline.utils import check_dependencies, validate_files
+from sirv_pipeline.coverage_bias import CoverageBiasModel
+from sirv_pipeline.integration import add_sirv_to_dataset
+from sirv_pipeline.evaluation import compare_with_flames, generate_report
 
-from sirv_pipeline.coverage_bias import (
-    model_transcript_coverage,
-    create_coverage_bias_model,
-    CoverageBiasModel,
-    ReadLengthSampler
-)
-
-from sirv_pipeline.integration import (
-    add_sirv_to_dataset
-)
-
-from sirv_pipeline.evaluation import (
-    compare_with_flames,
-    generate_report
-)
-
-from sirv_pipeline.utils import (
-    setup_logger,
-    check_dependencies,
-    validate_files,
-    validate_insertion_rate
-)
-
-# Export public API
+# Define public API
 __all__ = [
-    # Mapping
-    'map_sirv_reads',
-    'create_alignment',
-    'process_sirv_bams',
-    'extract_fastq_from_bam',
-    
-    # Coverage bias
-    'model_transcript_coverage',
-    'create_coverage_bias_model',
-    'CoverageBiasModel',
-    'ReadLengthSampler',
-    
-    # Integration
-    'add_sirv_to_dataset',
-    
-    # Evaluation
-    'compare_with_flames',
-    'generate_report',
-    
-    # Utils
+    'run_pipeline',
+    'parse_args',
     'setup_logger',
     'check_dependencies',
     'validate_files',
-    'validate_insertion_rate'
+    'CoverageBiasModel',
+    'add_sirv_to_dataset',
+    'compare_with_flames',
+    'generate_report',
 ]
+
+# Package metadata
+__author__ = 'Genomics Team'
+__email__ = 'info@genomics.team'
+__license__ = 'MIT'
+__description__ = 'A pipeline for integrating SIRV reads into scRNA-seq datasets'
