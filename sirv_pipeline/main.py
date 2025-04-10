@@ -11,12 +11,14 @@ import argparse
 import logging
 import pandas as pd
 from typing import Dict, List, Optional, Union
+from pathlib import Path
 
 from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam, create_simple_gtf_from_fasta, parse_transcripts_from_gtf
 from sirv_pipeline.coverage_bias import model_transcript_coverage, CoverageBiasModel
 from sirv_pipeline.integration import add_sirv_to_dataset
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
 from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files, create_combined_reference
+from sirv_pipeline.diagnostics import create_coverage_model_diagnostics
 
 
 def parse_args() -> argparse.Namespace:
@@ -302,6 +304,17 @@ def run_pipeline(args: argparse.Namespace) -> None:
                         # Generate visualization
                         plot_file = os.path.join(args.output_dir, "coverage_bias.png")
                         coverage_model.plot_distributions(plot_file)
+                        
+                        # Generate comprehensive coverage diagnostics
+                        plots_dir = os.path.join(args.output_dir, "coverage_diagnostics")
+                        os.makedirs(plots_dir, exist_ok=True)
+                        create_coverage_model_diagnostics(
+                            coverage_model=coverage_model,
+                            bam_file=args.learn_coverage_from,
+                            gtf_file=args.sirv_gtf,
+                            plots_dir=Path(plots_dir)
+                        )
+                        logger.info(f"Generated coverage model diagnostics in {plots_dir}")
                 else:
                     # Use default model based on type
                     logger.info(f"Using default {args.coverage_model} coverage bias model")
