@@ -18,6 +18,7 @@ import pickle
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
 import subprocess
+import shutil
 
 from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam, create_simple_gtf_from_fasta, parse_transcripts_from_gtf
 from sirv_pipeline.integration import add_sirv_to_dataset
@@ -213,54 +214,56 @@ def run_pipeline(args: argparse.Namespace) -> None:
         coverage_model_file = os.path.join(args.output_dir, "coverage_model.pkl")
         combined_reference = None
         
-        # Step 1: Prepare SIRV reference
-        if args.sirv_reference and not is_step_completed(state, "prepare_sirv_reference"):
-            # Create a local copy of the SIRV reference if needed
-            local_ref = os.path.join(args.output_dir, "local_reference.fa")
-            
-            if not os.path.exists(local_ref):
-                logger.info(f"Creating local copy of SIRV reference: {local_ref}")
-                os.makedirs(os.path.dirname(local_ref), exist_ok=True)
-                
-                try:
-                    import shutil
-                    shutil.copyfile(args.sirv_reference, local_ref)
-                    
-                    # Create index for the reference
-                    index_cmd = ["samtools", "faidx", local_ref]
-                    subprocess.run(index_cmd, check=True)
-                    
-                    logger.info(f"Indexed local copy of FASTA file: {local_ref}")
-                except Exception as e:
-                    logger.error(f"Error creating local reference: {str(e)}")
-                    local_ref = args.sirv_reference
+        # Set proper path to local_reference when resuming
+        if is_step_completed(state, "prepare_sirv_reference"):
+            # If resuming and reference was already prepared, set the local_reference path
+            local_reference = os.path.join(args.output_dir, "local_reference.fa")
+            logger.info(f"Using existing reference: {local_reference}")
+            # Make sure args.sirv_reference is also set correctly for downstream functions
+            args.sirv_reference = local_reference
+        else:
+            # Prepare SIRV reference if not already done
+            if not is_step_completed(state, "prepare_sirv_reference"):
+                logger.info("Preparing SIRV reference...")
+                local_reference = prepare_sirv_reference(args.sirv_reference, args.output_dir)
+                state["prepare_sirv_reference"] = datetime.datetime.now().isoformat()
+                save_pipeline_state(args.output_dir, state)
+            else:
+                logger.info(f"Step 'prepare_sirv_reference' was completed at {state['prepare_sirv_reference']}")
+                local_reference = os.path.join(args.output_dir, "local_reference.fa")
             
             # If we have both SIRV and non-SIRV references, create a combined reference
             if args.non_sirv_reference and args.create_combined_reference:
                 combined_reference = os.path.join(args.output_dir, "combined_reference.fa")
-                create_combined_reference(local_ref, args.non_sirv_reference, combined_reference)
+                create_combined_reference(local_reference, args.non_sirv_reference, combined_reference)
             
             mark_step_completed(state, "prepare_sirv_reference", {
-                "local_reference": local_ref,
+                "local_reference": local_reference,
                 "combined_reference": combined_reference
             })
             save_pipeline_state(args.output_dir, state)
             
             # Update the reference to use
-            args.sirv_reference = local_ref
+            args.sirv_reference = local_reference
         
         # Step 2: Prepare SIRV GTF
-        if not is_step_completed(state, "prepare_sirv_gtf"):
-            # Create GTF from FASTA if not provided
-            if not args.sirv_gtf and args.sirv_reference:
-                logger.info("No GTF file provided, generating from FASTA reference")
-                auto_gtf = os.path.join(args.output_dir, "auto_generated_reference.gtf")
-                create_simple_gtf_from_fasta(args.sirv_reference, auto_gtf)
+        if is_step_completed(state, "prepare_sirv_gtf"):
+            # If resuming and GTF was already prepared, set the GTF path
+            auto_gtf = os.path.join(args.output_dir, "local_reference.gtf")
+            if os.path.exists(auto_gtf):
+                logger.info(f"Using existing GTF file: {auto_gtf}")
                 args.sirv_gtf = auto_gtf
-                logger.info(f"Created GTF file: {args.sirv_gtf}")
-            elif not args.sirv_gtf:
-                logger.error("No SIRV GTF file provided or could not be generated")
-                sys.exit(1)
+        elif not is_step_completed(state, "prepare_sirv_gtf"):
+            # Check if GTF file is provided, if not, generate one from the FASTA
+            if not args.sirv_gtf:
+                auto_gtf = os.path.splitext(local_reference)[0] + '.gtf'
+                if not os.path.exists(auto_gtf):
+                    logger.info("No GTF file provided, generating from FASTA reference")
+                    create_simple_gtf_from_fasta(local_reference, auto_gtf)
+                    args.sirv_gtf = auto_gtf
+                else:
+                    logger.info(f"Using existing GTF file: {auto_gtf}")
+                    args.sirv_gtf = auto_gtf
             
             mark_step_completed(state, "prepare_sirv_gtf", {"gtf_path": args.sirv_gtf})
             save_pipeline_state(args.output_dir, state)
@@ -268,6 +271,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # Step 3: Process SIRV reads from BAM or FASTQ
         if not is_step_completed(state, "process_sirv_reads"):
             try:
+                # Ensure sirv_bam is not None when it's required
+                if not args.sirv_fastq and (not args.sirv_bam or len(args.sirv_bam) == 0):
+                    logger.error("No SIRV input provided. Either --sirv-fastq or --sirv-bam must be specified.")
+                    sys.exit(1)
+                
                 if args.sirv_fastq:
                     # Original FASTQ workflow
                     logger.info("Mapping SIRV reads from FASTQ...")
@@ -336,11 +344,14 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 logger.info(f"Learning coverage bias from {args.learn_coverage_from}")
                 
                 # Initialize coverage model
-                coverage_model = CoverageBiasModel(
-                    model_type=args.coverage_model,
-                    bin_count=100,
-                    seed=args.seed
-                )
+                if args.coverage_model == 'custom' and args.learn_coverage_from:
+                    coverage_model = CoverageBiasModel(length_bins=args.length_bins, logger=logger)
+                else:
+                    coverage_model = CoverageBiasModel(
+                        model_type=args.coverage_model,
+                        bin_count=100,
+                        seed=args.seed
+                    )
                 
                 # Determine which annotation file to use for coverage learning
                 coverage_annotation_file = args.sirv_gtf

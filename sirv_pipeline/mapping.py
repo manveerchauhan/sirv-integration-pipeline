@@ -489,29 +489,28 @@ def process_sirv_bams(
         shutil.rmtree(temp_dir)
 
 # Modification to create_simple_gtf_from_fasta function
-def create_simple_gtf_from_fasta(fasta_file, output_gtf):
-    """Create a simple GTF file from a FASTA reference file."""
-    import pysam
+def create_simple_gtf_from_fasta(fasta_file, local_fasta):
+    """
+    Create a simple GTF file from a FASTA reference.
+    Each sequence in the FASTA file becomes a transcript.
+    """
     import os
-    import subprocess
     import shutil
+    import logging
+    from Bio import SeqIO
     
+    logger = logging.getLogger(__name__)
     logger.info(f"Creating simple GTF file from FASTA: {fasta_file}")
     
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(os.path.abspath(output_gtf))
-    os.makedirs(output_dir, exist_ok=True)
+    # Only copy if source and destination are different files
+    if os.path.abspath(fasta_file) != os.path.abspath(local_fasta):
+        shutil.copy2(fasta_file, local_fasta)
     
-    # Create a local copy of the FASTA in the output directory
-    local_fasta = os.path.join(output_dir, "local_reference.fa")
-    shutil.copy2(fasta_file, local_fasta)
-    
-    # Index the local copy
-    logger.info(f"Indexing local copy of FASTA file: {local_fasta}")
-    pysam.faidx(local_fasta)
+    # Create GTF file path from FASTA path
+    gtf_file = os.path.splitext(local_fasta)[0] + '.gtf'
     
     # Create GTF file
-    with open(output_gtf, 'w') as gtf:
+    with open(gtf_file, 'w') as gtf:
         # Write header
         gtf.write('##gff-version 3\n')
         
@@ -528,5 +527,5 @@ def create_simple_gtf_from_fasta(fasta_file, output_gtf):
                 # Write exon feature
                 gtf.write(f"{seq_id}\tSIRV\texon\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
     
-    logger.info(f"Created GTF file: {output_gtf}")
-    return output_gtf
+    logger.info(f"Created GTF file: {gtf_file}")
+    return gtf_file

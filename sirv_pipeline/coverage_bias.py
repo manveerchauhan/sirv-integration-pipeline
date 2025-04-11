@@ -41,7 +41,10 @@ class CoverageBiasModel:
     def __init__(self, model_type="10x_cdna", 
                  bin_count=100, 
                  smoothing_factor=0.05,
-                 seed=None):
+                 seed=None,
+                 length_bins=10,
+                 logger=None,
+                 parameters=None):
         """
         Initialize the coverage bias model.
         
@@ -50,11 +53,15 @@ class CoverageBiasModel:
             bin_count: Number of bins to divide transcripts into
             smoothing_factor: Smoothing factor for kernel density estimation
             seed: Random seed for reproducibility
+            length_bins: Number of bins to divide transcripts into for modeling.
+            logger: Logger object for logging information and errors.
+            parameters: Optional pre-defined parameters (used when loading from file)
         """
         # Initialize model parameters
         self.model_type = model_type
         self.bin_count = bin_count
         self.smoothing_factor = smoothing_factor
+        self.seed = seed
         
         # Set random seed if provided
         if seed is not None:
@@ -63,13 +70,23 @@ class CoverageBiasModel:
         # Initialize distributions
         self.position_distribution = None  # Overall position distribution
         self.length_dependent_distributions = {}  # Length-stratified distributions
-        self.length_bins = []  # Transcript length bins
+        self.length_bins = length_bins
+        
+        # Initialize parameters dictionary if provided
+        if parameters is not None:
+            self.parameters = parameters
         
         # Use default model if specified
-        if model_type == "10x_cdna":
+        elif model_type == "10x_cdna":
             self._init_default_10x_cdna_model()
         elif model_type == "direct_rna":
             self._init_default_direct_rna_model()
+        
+        # Initialize logger
+        if logger is None:
+            self.logger = logging.getLogger(__name__)
+        else:
+            self.logger = logger
     
     def _init_default_10x_cdna_model(self):
         """Initialize with default 10X Chromium cDNA bias model."""
@@ -111,6 +128,13 @@ class CoverageBiasModel:
             y = stats.beta.pdf(x, a, b)
             y = y / np.sum(y)
             self.length_dependent_distributions[i] = (x, y)
+            
+        # Initialize parameters for model use
+        self.parameters = {
+            "profile": y,  # Default profile (strongest bias)
+            "length_effect": {f"bin_{i}": 1.0 for i in range(len(beta_params))},
+            "model_type": self.model_type
+        }
     
     def _init_default_direct_rna_model(self):
         """Initialize with default direct RNA bias model."""
@@ -144,6 +168,13 @@ class CoverageBiasModel:
             y = stats.beta.pdf(x, a, b)
             y = y / np.sum(y)
             self.length_dependent_distributions[i] = (x, y)
+            
+        # Initialize parameters for model use
+        self.parameters = {
+            "profile": y,  # Default profile (strongest bias)
+            "length_effect": {f"bin_{i}": 1.0 for i in range(len(beta_params))},
+            "model_type": self.model_type
+        }
 
     def learn_from_bam(self, bam_file, annotation_file, min_reads=100, length_bins=5):
         """Learn coverage bias from a BAM file.
@@ -961,6 +992,113 @@ class CoverageBiasModel:
             pickle.dump(model_data, f)
         
         logger.info(f"Coverage bias model saved to {filename}")
+
+    def load(self, filename):
+        """Load the coverage bias model from a file.
+        
+        Args:
+            filename (str): Path to load the model from
+            
+        Returns:
+            bool: True if loading was successful, False otherwise
+        """
+        try:
+            with open(filename, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            # Set model attributes from loaded data
+            self.model_type = model_data.get('model_type', self.model_type)
+            self.bin_count = model_data.get('bin_count', self.bin_count)
+            self.seed = model_data.get('seed', self.seed)
+            
+            # Convert lists back to numpy arrays if needed
+            loaded_params = model_data.get('parameters', {})
+            self.parameters = {}
+            for key, value in loaded_params.items():
+                if isinstance(value, list):
+                    self.parameters[key] = np.array(value)
+                else:
+                    self.parameters[key] = value
+            
+            # Set seed if it was saved
+            if self.seed is not None:
+                np.random.seed(self.seed)
+            
+            self.logger.info(f"Successfully loaded coverage model from {filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error loading coverage model: {str(e)}")
+            # Initialize default model as fallback
+            if self.model_type == "10x_cdna":
+                self._init_default_10x_cdna_model()
+            elif self.model_type == "direct_rna":
+                self._init_default_direct_rna_model()
+            return False
+
+    def apply_to_sequence(self, sequence, quality, target_length=None):
+        """Apply coverage bias model to a sequence.
+        
+        Args:
+            sequence (str): Input sequence
+            quality (str): Quality string for the sequence
+            target_length (int, optional): Target length for the output sequence
+            
+        Returns:
+            tuple: (biased_sequence, biased_quality)
+        """
+        try:
+            # If no target length specified, use original length
+            if target_length is None or target_length <= 0:
+                target_length = len(sequence)
+                
+            # Cap target length to original sequence length
+            target_length = min(target_length, len(sequence))
+            
+            # Sample position from bias model
+            if "profile" in self.parameters:
+                # Use the model's profile to determine read start or end position
+                profile = self.parameters["profile"]
+                x = np.linspace(0, 1, len(profile))
+                
+                # Sample relative position (0-1)
+                rel_pos = np.random.choice(x, p=profile/np.sum(profile))
+                
+                # Convert to sequence position
+                seq_len = len(sequence)
+                
+                # For 3' bias models (10x_cdna), higher values of rel_pos mean more 3' bias
+                # For 5' bias models (direct_rna), lower values of rel_pos mean more 5' bias
+                if self.model_type == "10x_cdna":
+                    # 3' bias - higher rel_pos means start closer to 3' end
+                    start_pos = int((seq_len - target_length) * rel_pos)
+                else:
+                    # 5' bias or custom - lower rel_pos means start closer to 5' end
+                    start_pos = int((seq_len - target_length) * (1 - rel_pos))
+                
+                # Ensure start_pos is within bounds
+                start_pos = max(0, min(start_pos, seq_len - target_length))
+            else:
+                # Fallback to random sampling if no profile
+                max_start = max(0, len(sequence) - target_length)
+                start_pos = np.random.randint(0, max_start + 1)
+            
+            # Extract subsequence
+            end_pos = start_pos + target_length
+            biased_seq = sequence[start_pos:end_pos]
+            
+            # Extract corresponding quality values
+            if quality and len(quality) >= end_pos:
+                biased_qual = quality[start_pos:end_pos]
+            else:
+                # Generate placeholder quality if not available
+                biased_qual = 'I' * len(biased_seq)
+            
+            return biased_seq, biased_qual
+            
+        except Exception as e:
+            self.logger.error(f"Error applying coverage bias to sequence: {str(e)}")
+            # Return original sequence as fallback
+            return sequence[:target_length], quality[:target_length] if quality else 'I' * target_length
 
     def plot_distributions(self, output_file=None):
         """Plot the coverage bias distribution.

@@ -11,6 +11,7 @@ import random
 import numpy as np
 import pandas as pd
 import gzip
+import time
 from Bio import SeqIO
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -44,24 +45,188 @@ class CellBarcode:
         return ''.join(random.choice(self.nucleotides) for _ in range(self.umi_length))
 
 
-def extract_cell_info(sc_fastq: str, sample_size: int = 1000) -> Dict[str, int]:
+def extract_cell_info(sc_fastq: str, sample_size: int = 0) -> Dict[str, int]:
     """
     Extract cell information from scRNA-seq FASTQ.
     
-    In a real implementation, this would parse actual cell barcodes.
-    For now, it generates synthetic barcodes and counts.
+    This function parses cell barcodes from read headers in the FASTQ file.
+    It extracts the barcode from the part before the first underscore in the read ID,
+    or from the CB:Z: tag if present. It also collects statistics on UMIs if available.
+    
+    Args:
+        sc_fastq: Path to single-cell FASTQ file
+        sample_size: Number of reads to process. Set to 0 to process all reads.
+        
+    Returns:
+        Dict[str, int]: Dictionary mapping cell barcodes to read counts
     """
     logger.info(f"Extracting cell information from {sc_fastq}")
     
-    # Create synthetic cell barcodes (10 cells by default)
-    barcode_gen = CellBarcode()
-    barcodes = barcode_gen.generate_barcodes(10)
+    # Dictionary to store cell barcodes and their read counts
+    cell_info = {}
+    total_reads = 0
+    processed_reads = 0
     
-    # Assign random read counts
-    read_counts = np.random.randint(1000, 5000, size=len(barcodes))
-    cell_info = dict(zip(barcodes, read_counts))
+    # Statistics collection
+    umi_stats = {}
+    barcode_lengths = set()
+    umi_lengths = set()
+    cb_tag_present = 0
+    ub_tag_present = 0
+    header_formats = {
+        'underscore_format': 0,
+        'cb_tag_format': 0,
+        'other_format': 0
+    }
     
-    logger.info(f"Found {len(cell_info)} cells with {sum(read_counts)} total reads")
+    # Determine if the file is gzipped
+    opener = gzip.open if sc_fastq.endswith('.gz') else open
+    
+    # Process the start time to report processing duration
+    start_time = time.time()
+    
+    with opener(sc_fastq, 'rt') as f:
+        # Process the FASTQ file (4 lines per record)
+        line = f.readline()
+        while line and (sample_size <= 0 or processed_reads < sample_size):
+            if line.startswith('@'):  # Header line
+                # Parse the header line to extract the cell barcode
+                header = line.strip()
+                
+                # Extract barcode and UMI information
+                barcode = None
+                umi = None
+                
+                # Try to extract barcode from CB:Z: tag if present
+                if 'CB:Z:' in header:
+                    barcode = header.split('CB:Z:')[1].split()[0].strip()
+                    header_formats['cb_tag_format'] += 1
+                    cb_tag_present += 1
+                else:
+                    # Otherwise extract from the first part of the read ID (before underscore)
+                    read_id = header[1:].split()[0]  # Remove @ and get the first part
+                    if '_' in read_id:
+                        barcode = read_id.split('_')[0]
+                        header_formats['underscore_format'] += 1
+                    else:
+                        barcode = read_id  # Use whole ID if no underscore
+                        header_formats['other_format'] += 1
+                
+                # Try to extract UMI from UB:Z: tag if present
+                if 'UB:Z:' in header:
+                    umi = header.split('UB:Z:')[1].split()[0].strip()
+                    ub_tag_present += 1
+                elif '_' in read_id and len(read_id.split('_')) > 1:
+                    # Try to get UMI from the second part of read ID
+                    umi = read_id.split('_')[1]
+                    if '#' in umi:  # Handle case where UMI is followed by #
+                        umi = umi.split('#')[0]
+                
+                # Skip if no barcode found (shouldn't happen with our parsing)
+                if not barcode:
+                    processed_reads += 1
+                    # Skip the next 3 lines
+                    f.readline()  # sequence
+                    f.readline()  # '+'
+                    f.readline()  # quality
+                    line = f.readline()
+                    continue
+                
+                # Collect statistics
+                barcode_lengths.add(len(barcode))
+                if umi:
+                    umi_lengths.add(len(umi))
+                    if barcode not in umi_stats:
+                        umi_stats[barcode] = set()
+                    umi_stats[barcode].add(umi)
+                
+                # Update cell count
+                if barcode not in cell_info:
+                    cell_info[barcode] = 0
+                cell_info[barcode] += 1
+                total_reads += 1
+                
+                # Skip the next 3 lines (sequence, '+', quality)
+                f.readline()  # sequence
+                f.readline()  # '+'
+                f.readline()  # quality
+                
+                processed_reads += 1
+                
+                # Log progress periodically
+                if processed_reads % 100000 == 0:
+                    elapsed = time.time() - start_time
+                    reads_per_sec = processed_reads / elapsed if elapsed > 0 else 0
+                    logger.info(f"Processed {processed_reads:,} reads, found {len(cell_info):,} cells so far ({reads_per_sec:.1f} reads/sec)")
+            else:
+                # Skip to the next record
+                for _ in range(3):  # Skip the next 3 lines
+                    f.readline()
+                processed_reads += 1
+            
+            # Read the next header line
+            line = f.readline()
+    
+    # Calculate summary statistics
+    elapsed_time = time.time() - start_time
+    reads_per_second = processed_reads / elapsed_time if elapsed_time > 0 else 0
+    
+    # Cell statistics
+    num_cells = len(cell_info)
+    mean_reads_per_cell = total_reads / num_cells if num_cells > 0 else 0
+    median_reads_per_cell = np.median(list(cell_info.values())) if cell_info else 0
+    max_reads_per_cell = max(cell_info.values()) if cell_info else 0
+    min_reads_per_cell = min(cell_info.values()) if cell_info else 0
+    
+    # UMI statistics
+    cells_with_umis = len(umi_stats)
+    total_unique_umis = sum(len(umis) for umis in umi_stats.values())
+    mean_umis_per_cell = total_unique_umis / cells_with_umis if cells_with_umis > 0 else 0
+    
+    # Log detailed statistics
+    logger.info(f"Finished processing {processed_reads:,} reads in {elapsed_time:.2f} seconds ({reads_per_second:.1f} reads/sec)")
+    logger.info(f"Found {num_cells:,} cells with {total_reads:,} total reads")
+    logger.info(f"Read header formats: CB:Z tag: {header_formats['cb_tag_format']:,}, Underscore format: {header_formats['underscore_format']:,}, Other: {header_formats['other_format']:,}")
+    logger.info(f"Reads per cell: Mean: {mean_reads_per_cell:.1f}, Median: {median_reads_per_cell:.1f}, Min: {min_reads_per_cell:,}, Max: {max_reads_per_cell:,}")
+    
+    if cells_with_umis > 0:
+        logger.info(f"UMI statistics: {cells_with_umis:,} cells with UMIs, {total_unique_umis:,} total unique UMIs, {mean_umis_per_cell:.1f} mean UMIs per cell")
+        if umi_lengths:
+            logger.info(f"UMI lengths: {min(umi_lengths)} to {max(umi_lengths)} nucleotides")
+    
+    if barcode_lengths:
+        logger.info(f"Barcode lengths: {min(barcode_lengths)} to {max(barcode_lengths)} nucleotides")
+    
+    # Generate and save histogram of reads per cell
+    try:
+        import matplotlib.pyplot as plt
+        import os
+        
+        # Create plots directory if it doesn't exist
+        plots_dir = os.path.join(os.path.dirname(os.path.abspath(sc_fastq)), "cell_stats")
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # Plot histogram of reads per cell
+        plt.figure(figsize=(10, 6))
+        plt.hist(list(cell_info.values()), bins=50)
+        plt.xlabel("Reads per Cell")
+        plt.ylabel("Number of Cells")
+        plt.title(f"Distribution of Reads per Cell (n={num_cells:,})")
+        
+        # Add statistics to plot
+        stats_text = f"Total Cells: {num_cells:,}\nTotal Reads: {total_reads:,}\n"
+        stats_text += f"Mean Reads/Cell: {mean_reads_per_cell:.1f}\nMedian Reads/Cell: {median_reads_per_cell:.1f}"
+        plt.figtext(0.95, 0.95, stats_text, horizontalalignment='right', verticalalignment='top', fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
+        
+        # Save plot
+        plot_path = os.path.join(plots_dir, "reads_per_cell.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved reads per cell histogram to {plot_path}")
+    except Exception as e:
+        logger.warning(f"Could not generate cell statistics plot: {str(e)}")
+    
     return cell_info
 
 
@@ -162,9 +327,9 @@ def add_sirv_to_dataset(
     read_to_transcript = dict(zip(sirv_map_df['read_id'], sirv_map_df['sirv_transcript']))
     logger.info(f"Loaded {len(read_to_transcript)} SIRV read mappings")
     
-    # Step 2: Extract cell information from scRNA-seq data
+    # Step 2: Extract cell information from scRNA-seq dataset
     logger.info(f"Extracting cell information")
-    cell_info = extract_cell_info(sc_fastq, sample_size)
+    cell_info = extract_cell_info(sc_fastq, sample_size=0)
     
     # Step 3: Create read length sampler and coverage bias model
     logger.info(f"Creating read length sampler and coverage bias model")
