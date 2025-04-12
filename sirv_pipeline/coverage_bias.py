@@ -35,7 +35,13 @@ SAMTOOLS_PATH = "/apps/easybuild-2022/easybuild/software/Compiler/GCC/11.3.0/SAM
 class CoverageBiasModel:
     """
     Model to capture and simulate 5'-3' coverage bias in cDNA long reads.
-    This model specifically targets 10X Chromium cDNA preparation biases.
+    
+    This model can represent several types of coverage bias:
+    - 10x_cdna: 3' biased coverage common in 10X Chromium cDNA preparation
+    - direct_rna: 5' biased coverage common in direct RNA sequencing
+    - custom: Learned from actual aligned reads
+    
+    The model can be saved to and loaded from pickle files for reuse.
     """
     
     def __init__(self, model_type="10x_cdna", 
@@ -55,7 +61,8 @@ class CoverageBiasModel:
             seed: Random seed for reproducibility
             length_bins: Number of bins to divide transcripts into for modeling.
             logger: Logger object for logging information and errors.
-            parameters: Optional pre-defined parameters (used when loading from file)
+            parameters: Optional pre-defined parameters dictionary. If provided,
+                        this will override the default model parameters.
         """
         # Initialize model parameters
         self.model_type = model_type
@@ -72,26 +79,81 @@ class CoverageBiasModel:
         self.length_dependent_distributions = {}  # Length-stratified distributions
         self.length_bins = length_bins
         
-        # Initialize parameters dictionary if provided
-        if parameters is not None:
-            self.parameters = parameters
-        
-        # Use default model if specified
-        elif model_type == "10x_cdna":
-            self._init_default_10x_cdna_model()
-        elif model_type == "direct_rna":
-            self._init_default_direct_rna_model()
-        
         # Initialize logger
         if logger is None:
             self.logger = logging.getLogger(__name__)
         else:
             self.logger = logger
+        
+        # Initialize parameters dict that will be used for plotting and sampling
+        self.parameters = {}
+            
+        # Load from provided parameters if available
+        if parameters is not None:
+            self._load_from_parameters(parameters)
+        # Otherwise use default model based on specified type
+        elif model_type == "10x_cdna":
+            self._init_default_10x_cdna_model()
+        elif model_type == "direct_rna":
+            self._init_default_direct_rna_model()
+        elif model_type == "custom":
+            # Initialize with uniform distribution
+            # This should be updated by calling learn_from_bam later
+            self._init_custom_uniform_model()
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+    
+    def _load_from_parameters(self, parameters):
+        """
+        Load model from parameters dictionary.
+        
+        This handles both the case where parameters is a complete model dict
+        (with 'parameters' and 'model_type' keys) and where it's just the
+        inner parameters dict.
+        
+        Args:
+            parameters: Dict containing model parameters
+        """
+        self.logger.info(f"Loading model from parameters dictionary")
+        
+        # Check if this is a complete model dict or just parameters
+        if 'parameters' in parameters and isinstance(parameters['parameters'], dict):
+            inner_params = parameters['parameters']
+            # Update model type if available
+            if 'model_type' in parameters:
+                self.model_type = parameters['model_type']
+                self.logger.info(f"Using model type from parameters: {self.model_type}")
+        else:
+            # Assume the dict is already the inner parameters
+            inner_params = parameters
+        
+        # Store parameters
+        if 'profile' in inner_params:
+            self.parameters['profile'] = inner_params['profile']
+        else:
+            self.logger.warning("No profile found in parameters, using uniform")
+            self.parameters['profile'] = np.ones(1000) / 1000
+            
+        if 'length_effect' in inner_params:
+            self.parameters['length_effect'] = inner_params['length_effect']
+        else:
+            self.logger.warning("No length_effect found in parameters, using uniform")
+            self.parameters['length_effect'] = {f'bin_{i}': 1.0 for i in range(5)}
+        
+        # Set up position distribution based on profile
+        x = np.linspace(0, 1, len(self.parameters['profile']))
+        self.position_distribution = (x, self.parameters['profile'])
+        
+        self.logger.info(f"Loaded model with profile length {len(self.parameters['profile'])} " +
+                        f"and {len(self.parameters['length_effect'])} length bins")
     
     def _init_default_10x_cdna_model(self):
-        """Initialize with default 10X Chromium cDNA bias model."""
-        # Implement a default 3' biased distribution (more reads near 1.0 position)
-        # This is based on empirical observations from multiple datasets
+        """Initialize with default 10X Chromium cDNA bias model.
+        
+        This creates a model with strong 3' bias (more reads near 3' end),
+        typical of 10x Genomics Chromium cDNA sequencing.
+        """
+        self.logger.info("Initializing default 10X Chromium cDNA bias model")
         
         # Create a 3' biased distribution (more reads near 1.0 position)
         x = np.linspace(0, 1, 1000)
@@ -132,12 +194,17 @@ class CoverageBiasModel:
         # Initialize parameters for model use
         self.parameters = {
             "profile": y,  # Default profile (strongest bias)
-            "length_effect": {f"bin_{i}": 1.0 for i in range(len(beta_params))},
-            "model_type": self.model_type
+            "length_effect": {f"bin_{i+1}": np.float64(params[1]/params[0]) for i, params in enumerate(beta_params)}
         }
     
     def _init_default_direct_rna_model(self):
-        """Initialize with default direct RNA bias model."""
+        """Initialize with default direct RNA bias model.
+        
+        This creates a model with 5' bias (more reads near 5' end),
+        typical of direct RNA sequencing.
+        """
+        self.logger.info("Initializing default direct RNA bias model")
+        
         # Create a 5' biased distribution (more reads near 0.0 position)
         x = np.linspace(0, 1, 1000)
         
@@ -172,12 +239,44 @@ class CoverageBiasModel:
         # Initialize parameters for model use
         self.parameters = {
             "profile": y,  # Default profile (strongest bias)
-            "length_effect": {f"bin_{i}": 1.0 for i in range(len(beta_params))},
-            "model_type": self.model_type
+            "length_effect": {f"bin_{i+1}": np.float64(params[0]/params[1]) for i, params in enumerate(beta_params)}
+        }
+    
+    def _init_custom_uniform_model(self):
+        """Initialize with a uniform distribution as a starting point for custom models.
+        
+        This is used when a model will be learned from data later.
+        """
+        self.logger.info("Initializing uniform custom model")
+        
+        # Create a uniform distribution
+        x = np.linspace(0, 1, 1000)
+        y = np.ones_like(x)
+        
+        # Normalize
+        y = y / np.sum(y)
+        
+        # Store as position distribution
+        self.position_distribution = (x, y)
+        
+        # Define default length bins
+        self.length_bins = [0, 500, 1000, 2000, 5000, np.inf]
+        
+        # Use uniform distribution for all length bins
+        for i in range(5):
+            self.length_dependent_distributions[i] = (x, y.copy())
+            
+        # Initialize parameters for model use
+        self.parameters = {
+            "profile": y,
+            "length_effect": {f"bin_{i+1}": 1.0 for i in range(5)}
         }
 
     def learn_from_bam(self, bam_file, annotation_file, min_reads=100, length_bins=5):
         """Learn coverage bias from a BAM file.
+        
+        This analyzes read alignments to transcripts to build a custom
+        coverage bias model.
         
         Args:
             bam_file (str): Path to BAM file
@@ -198,6 +297,7 @@ class CoverageBiasModel:
         import traceback
         
         self.logger.info(f"Learning coverage bias from BAM file: {bam_file}")
+        self.model_type = "custom"  # Mark as custom model
         
         # Create a temporary directory
         temp_dir = tempfile.mkdtemp(prefix="coverage_model_")
@@ -227,505 +327,189 @@ class CoverageBiasModel:
                     if read.query_name is None or read.cigarstring is None:
                         continue
                         
-                    # Write to new BAM file
+                    # Write read to output BAM
                     out_bam.write(read)
                     valid_reads += 1
                     
-                    # Give progress updates for large files
-                    if processed_reads % 1000000 == 0:
-                        self.logger.info(f"Processed {processed_reads} reads, kept {valid_reads} valid reads")
+                    # Log progress
+                    if processed_reads % 100000 == 0:
+                        self.logger.info(f"Processed {processed_reads:,} reads, found {valid_reads:,} valid reads")
                 
+                # Close files
                 in_bam.close()
                 out_bam.close()
                 
-                self.logger.info(f"Processed {processed_reads} reads, kept {valid_reads} valid reads")
+                self.logger.info(f"Processed {processed_reads:,} reads, found {valid_reads:,} valid reads")
                 
-                # Sort the fixed BAM file
-                sorted_bam = os.path.join(temp_dir, "sorted.bam")
-                self.logger.info(f"Sorting fixed BAM file: {fixed_bam} -> {sorted_bam}")
+                # Index the fixed BAM file
+                self.logger.info(f"Indexing fixed BAM file")
+                pysam.index(fixed_bam)
                 
-                # Use pysam for sorting
-                pysam.sort("-o", sorted_bam, fixed_bam)
-                self.logger.info(f"Successfully sorted BAM file to: {sorted_bam}")
-                
-                # Try to index the sorted BAM file
-                self.logger.info(f"Indexing BAM file: {sorted_bam}")
-                try:
-                    pysam.index(sorted_bam)
-                    self.logger.info(f"Successfully indexed BAM file: {sorted_bam}")
-                except Exception as e:
-                    self.logger.warning(f"Could not index BAM file: {str(e)}")
-                    self.logger.warning("Will continue without index, but performance may be affected")
             except Exception as e:
                 self.logger.error(f"Error pre-processing BAM file: {str(e)}")
                 self.logger.error(traceback.format_exc())
-                self.logger.warning("Using original BAM file")
-                
-                # Fall back to simple sorting of original BAM
-                sorted_bam = os.path.join(temp_dir, "sorted.bam")
-                self.logger.info(f"Sorting original BAM file: {bam_file} -> {sorted_bam}")
-                
-                try:
-                    pysam.sort("-o", sorted_bam, bam_file)
-                    self.logger.info(f"Successfully sorted BAM file to: {sorted_bam}")
-                except Exception as e:
-                    self.logger.error(f"Could not sort BAM file: {str(e)}")
-                    self.logger.error("Will use original BAM file directly")
-                    sorted_bam = bam_file
+                return False
             
-            # Now process the GTF file to get transcript information
-            self.logger.info(f"Parsing transcripts from annotation: {annotation_file}")
-            transcript_lengths = {}
-            transcript_names = {}  # Map for alternative names
-            
-            # Try parsing with gffutils first
+            # Parse the annotation file
+            self.logger.info(f"Parsing annotation file: {annotation_file}")
             try:
-                import gffutils
-                import tempfile
+                transcript_info = self._parse_annotation(annotation_file)
                 
-                # Create an in-memory database
-                db_file = os.path.join(temp_dir, "gtf.db")
-                
-                # Try creating the gffutils database
-                try:
-                    db = gffutils.create_db(
-                        annotation_file,
-                        dbfn=db_file,
-                        force=True,
-                        keep_order=True,
-                        merge_strategy='merge',
-                        sort_attribute_values=True,
-                        disable_infer_genes=True,
-                        disable_infer_transcripts=True
-                    )
-                    
-                    # Get all transcripts
-                    for tx in db.features_of_type('transcript'):
-                        tx_id = tx.id
-                        if 'transcript_id' in tx.attributes:
-                            tx_id = tx.attributes['transcript_id'][0]
-                        
-                        # Calculate length
-                        length = tx.end - tx.start + 1
-                        transcript_lengths[tx_id] = length
-                        
-                        # Add alternative names
-                        if '.' in tx_id:
-                            base_id = tx_id.split('.')[0]
-                            transcript_lengths[base_id] = length
-                            transcript_names[base_id] = tx_id
-                        
-                        # Also store chromosome name if different
-                        if tx.seqid != tx_id:
-                            transcript_lengths[tx.seqid] = length
-                            transcript_names[tx.seqid] = tx_id
-                            
-                    self.logger.info(f"Parsed {len(transcript_lengths)} transcripts using gffutils")
-                except Exception as e:
-                    self.logger.warning(f"Could not use gffutils to parse GTF: {str(e)}")
-                    raise
-            except Exception:
-                # Fall back to manual parsing
-                self.logger.info("Falling back to manual GTF parsing")
-                
-                with open(annotation_file) as f:
-                    for line in f:
-                        if line.startswith('#'):
-                            continue
-                        
-                        fields = line.strip().split('\t')
-                        if len(fields) < 9:
-                            continue
-                        
-                        feature_type = fields[2]
-                        if feature_type != 'transcript' and feature_type != 'exon':
-                            continue
-                        
-                        # Extract transcript ID from attributes
-                        attr_str = fields[8]
-                        chr_name = fields[0]
-                        tx_id = None
-                        
-                        # Try different formats of transcript_id attribute
-                        tx_id_match = re.search(r'transcript_id "([^"]+)"', attr_str)
-                        if tx_id_match:
-                            tx_id = tx_id_match.group(1)
-                        else:
-                            tx_id_match = re.search(r'transcript_id=([^;]+)', attr_str)
-                            if tx_id_match:
-                                tx_id = tx_id_match.group(1).strip()
-                            else:
-                                # Try gene_id as a fallback
-                                gene_id_match = re.search(r'gene_id "([^"]+)"', attr_str)
-                                if gene_id_match:
-                                    tx_id = gene_id_match.group(1)
-                                else:
-                                    # Last resort: use chromosome name as ID
-                                    tx_id = chr_name
-                        
-                        if feature_type == 'transcript':
-                            start = int(fields[3]) - 1  # 0-based
-                            end = int(fields[4])
-                            length = end - start
-                            
-                            transcript_lengths[tx_id] = length
-                            
-                            # Store additional reference names for better matching
-                            # 1. Without version number (e.g., ENST00000456328.2 -> ENST00000456328)
-                            if '.' in tx_id:
-                                base_id = tx_id.split('.')[0]
-                                transcript_lengths[base_id] = length
-                                transcript_names[base_id] = tx_id
-                            
-                            # 2. Store the chromosome/reference name too
-                            if chr_name != tx_id:
-                                transcript_lengths[chr_name] = length
-                                transcript_names[chr_name] = tx_id
-                            
-                            # 3. Store with and without "transcript:" prefix
-                            if tx_id.startswith("transcript:"):
-                                simple_id = tx_id.replace("transcript:", "")
-                                transcript_lengths[simple_id] = length
-                                transcript_names[simple_id] = tx_id
-                            else:
-                                prefixed_id = f"transcript:{tx_id}"
-                                transcript_lengths[prefixed_id] = length
-                                transcript_names[prefixed_id] = tx_id
-            
-                self.logger.info(f"Parsed {len(transcript_lengths)} transcripts from GTF")
-            
-            # Now open the BAM file and start processing reads
-            self.logger.info(f"Processing reads from BAM file: {sorted_bam}")
-            
-            # Process BAM file to get coverage data
-            coverage_data = defaultdict(lambda: defaultdict(int))
-            transcript_counts = defaultdict(int)
-            position_counts = defaultdict(int)
-            
-            # Reference matching stats
-            found_refs = set()
-            missing_refs = set()
-            
-            # Open BAM file - try with index first, fall back to no index
-            try:
-                bam = pysam.AlignmentFile(sorted_bam, "rb")
-                
-                # Get BAM references 
-                bam_refs = list(bam.references) if bam.references else []
-                
-                # Log info about BAM references
-                self.logger.info(f"BAM file has {len(bam_refs)} reference sequences")
-                if bam_refs:
-                    self.logger.info(f"First 5 BAM references: {bam_refs[:5]}")
-                
-                # Log info about transcript lengths
-                self.logger.info(f"We have {len(transcript_lengths)} transcript lengths")
-                if transcript_lengths:
-                    tx_sample = list(transcript_lengths.keys())[:5]
-                    self.logger.info(f"First 5 transcript IDs: {tx_sample}")
-                
-                # Build a mapping for reference name variants
-                ref_name_map = {}
-                
-                # First, add exact mapping for BAM references
-                for ref in bam_refs:
-                    ref_name_map[ref] = ref
-                    
-                    # Add variant mappings
-                    # Without version number
-                    if '.' in ref:
-                        base_ref = ref.split('.')[0]
-                        ref_name_map[base_ref] = ref
-                    
-                    # Without ENST prefix if present
-                    if ref.startswith('ENST'):
-                        ref_name_map[ref[4:]] = ref
-                    
-                    # With and without "transcript:" prefix
-                    if ref.startswith("transcript:"):
-                        simple_ref = ref.replace("transcript:", "")
-                        ref_name_map[simple_ref] = ref
-                    else:
-                        prefixed_ref = f"transcript:{ref}"
-                        ref_name_map[prefixed_ref] = ref
-                
-                # Next, add all transcript IDs from GTF for reverse lookup
-                for tx_id in transcript_lengths.keys():
-                    if tx_id not in ref_name_map:
-                        ref_name_map[tx_id] = tx_id
-                
-                # Count total reads
-                try:
-                    total_reads = bam.count()
-                    self.logger.info(f"BAM file has {total_reads} total reads")
-                except:
-                    self.logger.warning("Could not count total reads in BAM")
-                    total_reads = 0
-                
-                # Process reads
-                processed_reads = 0
-                skipped_reads = 0
-                total_read_positions = 0
-                reads_with_tx = 0
-                
-                # Try to use fetch with index first
-                has_index = os.path.exists(sorted_bam + '.bai')
-                
-                # Function to process a read
-                def process_read(read):
-                    nonlocal processed_reads, skipped_reads, total_read_positions, reads_with_tx
-                    
-                    processed_reads += 1
-                    
-                    # Skip unmapped reads
-                    if read.is_unmapped:
-                        skipped_reads += 1
-                        return
-                        
-                    # Skip secondary/supplementary alignments
-                    if read.is_secondary or read.is_supplementary:
-                        skipped_reads += 1
-                        return
-                    
-                    # Get reference name and try to match it to our transcript list
-                    ref_name = read.reference_name
-                    if not ref_name or ref_name == '*':
-                        skipped_reads += 1
-                        return
-                        
-                    tx_id = None
-                    
-                    # Try direct match
-                    if ref_name in transcript_lengths:
-                        tx_id = ref_name
-                        found_refs.add(ref_name)
-                    elif ref_name in transcript_names:
-                        tx_id = transcript_names[ref_name]
-                        found_refs.add(tx_id)
-                    else:
-                        # Try lookup through our reference map
-                        for variant, orig_ref in ref_name_map.items():
-                            if variant in transcript_lengths:
-                                tx_id = variant
-                                found_refs.add(tx_id)
-                                break
-                        
-                        # If still not found, try removing version numbers and prefixes
-                        if not tx_id:
-                            # Without version
-                            if '.' in ref_name:
-                                base_ref = ref_name.split('.')[0]
-                                if base_ref in transcript_lengths:
-                                    tx_id = base_ref
-                                    found_refs.add(base_ref)
-                            
-                            # With/without "transcript:" prefix
-                            if not tx_id:
-                                if ref_name.startswith("transcript:"):
-                                    simple_ref = ref_name.replace("transcript:", "")
-                                    if simple_ref in transcript_lengths:
-                                        tx_id = simple_ref
-                                        found_refs.add(simple_ref)
-                                else:
-                                    prefixed_ref = f"transcript:{ref_name}"
-                                    if prefixed_ref in transcript_lengths:
-                                        tx_id = prefixed_ref
-                                        found_refs.add(prefixed_ref)
-                    
-                    if not tx_id:
-                        if ref_name not in missing_refs:
-                            missing_refs.add(ref_name)
-                            if len(missing_refs) <= 10:
-                                self.logger.debug(f"Reference not found in transcript list: {ref_name}")
-                        skipped_reads += 1
-                        return
-                    
-                    # We found a matching transcript!
-                    reads_with_tx += 1
-                    transcript_counts[tx_id] += 1
-                    
-                    # Get transcript length
-                    tx_len = transcript_lengths[tx_id]
-                    
-                    # Process read positions
-                    for pos in range(read.reference_start, read.reference_end):
-                        rel_pos = pos / tx_len  # Position as fraction of transcript length
-                        bin_idx = int(rel_pos * self.bin_count)
-                        
-                        # Ensure bin_idx is within range
-                        if bin_idx < 0:
-                            bin_idx = 0
-                        elif bin_idx >= self.bin_count:
-                            bin_idx = self.bin_count - 1
-                        
-                        coverage_data[tx_id][bin_idx] += 1
-                        position_counts[tx_id] += 1
-                        total_read_positions += 1
-                
-                # Process reads - try with index first, fall back to until_eof
-                if has_index:
-                    try:
-                        # Process each reference that matches a transcript
-                        refs_to_process = []
-                        for ref in bam_refs:
-                            # Check if this reference exists in our transcript map
-                            if ref in transcript_lengths or ref in transcript_names:
-                                refs_to_process.append(ref)
-                            elif ref in ref_name_map and ref_name_map[ref] in transcript_lengths:
-                                refs_to_process.append(ref)
-                        
-                        if refs_to_process:
-                            self.logger.info(f"Processing reads for {len(refs_to_process)} matching references")
-                            
-                            for ref in refs_to_process:
-                                try:
-                                    for read in bam.fetch(ref):
-                                        process_read(read)
-                                except Exception as e:
-                                    self.logger.warning(f"Error fetching reads for reference {ref}: {str(e)}")
-                        else:
-                            # No matching references found, process all reads
-                            self.logger.warning("No matching references found, processing all reads")
-                            for read in bam.fetch(until_eof=True):
-                                process_read(read)
-                    except Exception as e:
-                        self.logger.warning(f"Error using indexed fetch: {str(e)}")
-                        self.logger.warning("Falling back to processing all reads")
-                        # Fall back to processing all reads
-                        for read in bam.fetch(until_eof=True):
-                            process_read(read)
-                else:
-                    # No index, process all reads
-                    self.logger.info("No BAM index, processing all reads")
-                    for read in bam.fetch(until_eof=True):
-                        process_read(read)
-                        
-                    # Give progress updates for large files
-                    if processed_reads % 1000000 == 0:
-                        self.logger.info(f"Processed {processed_reads} reads, found {reads_with_tx} with transcript matches")
-                
-                bam.close()
-                
-                # Log statistics
-                self.logger.info(f"Processed {processed_reads} reads")
-                self.logger.info(f"Skipped {skipped_reads} reads")
-                self.logger.info(f"Found {len(found_refs)} matching transcripts")
-                self.logger.info(f"Missing {len(missing_refs)} reference sequences")
-                self.logger.info(f"Retained {total_read_positions} valid read positions")
-                self.logger.info(f"Reads with transcript matches: {reads_with_tx}")
-                
-                # Check if we have enough data
-                if total_read_positions < min_reads:
-                    self.logger.error(f"Not enough read positions for learning: {total_read_positions} < {min_reads}")
-                    
-                    # If we have no reads but references were found, try using default coverage
-                    if len(found_refs) > 0:
-                        self.logger.warning("References were found but not enough read positions. Using a simple model with minimal data.")
-                        
-                        # Create a very simple coverage profile with slight 3' bias (typical for cDNA)
-                        coverage_profile = np.linspace(0.8, 1.2, self.bin_count)
-                        
-                        # Create a uniform length effect
-                        length_effect = {'default': 1.0}
-                        
-                        # Update model parameters
-                        self.parameters = {
-                            "profile": coverage_profile,
-                            "length_effect": length_effect
-                        }
-                        
-                        self.logger.info("Created simple coverage bias model with minimal data")
-                        return True
-                    
+                if not transcript_info:
+                    self.logger.error(f"No transcript information found in {annotation_file}")
                     return False
-                
-                # Calculate coverage profile
-                coverage_profile = np.zeros(self.bin_count)
-                
-                # Only use transcripts with sufficient coverage
-                tx_with_coverage = [tx for tx, count in transcript_counts.items() if count >= 5]
-                self.logger.info(f"Using {len(tx_with_coverage)} transcripts for coverage profile")
-                
-                if not tx_with_coverage:
-                    self.logger.error("No transcripts with sufficient coverage")
-                    return False
-                
-                # Calculate normalized coverage for each transcript
-                for tx_id in tx_with_coverage:
-                    tx_profile = np.zeros(self.bin_count)
                     
-                    for bin_idx in range(self.bin_count):
-                        tx_profile[bin_idx] = coverage_data[tx_id].get(bin_idx, 0)
-                    
-                    # Normalize to average=1 (if any coverage)
-                    if np.sum(tx_profile) > 0:
-                        tx_profile = tx_profile / np.mean(tx_profile)
-                        coverage_profile += tx_profile
-                
-                # Average across transcripts
-                coverage_profile = coverage_profile / len(tx_with_coverage)
-                
-                # Ensure profile has average=1
-                if np.mean(coverage_profile) > 0:
-                    coverage_profile = coverage_profile / np.mean(coverage_profile)
-                
-                # Group transcripts by length
-                tx_lengths = sorted([(tx, transcript_lengths[tx]) for tx in tx_with_coverage], 
-                                   key=lambda x: x[1])
-                
-                length_groups = {}
-                group_size = max(1, len(tx_lengths) // length_bins)
-                
-                for i in range(length_bins):
-                    start_idx = i * group_size
-                    end_idx = min((i + 1) * group_size, len(tx_lengths))
-                    
-                    if start_idx >= len(tx_lengths):
-                        break
-                    
-                    group_name = f"bin_{i+1}"
-                    length_groups[group_name] = [tx[0] for tx in tx_lengths[start_idx:end_idx]]
-                
-                # Calculate length effects
-                length_effect = {}
-                
-                for group, tx_list in length_groups.items():
-                    group_counts = [transcript_counts[tx] for tx in tx_list]
-                    length_effect[group] = np.mean(group_counts) if group_counts else 0
-                
-                # Normalize length effects to average=1
-                if length_effect:
-                    mean_effect = np.mean(list(length_effect.values()))
-                    if mean_effect > 0:
-                        length_effect = {k: v/mean_effect for k, v in length_effect.items()}
-                
-                # Update model parameters
-                self.parameters = {
-                    "profile": coverage_profile,
-                    "length_effect": length_effect
-                }
-                
-                self.logger.info("Successfully learned coverage bias model")
-                return True
+                self.logger.info(f"Found {len(transcript_info):,} transcripts in annotation file")
                 
             except Exception as e:
-                self.logger.error(f"Error processing BAM file: {str(e)}")
+                self.logger.error(f"Error parsing annotation file: {str(e)}")
                 self.logger.error(traceback.format_exc())
                 return False
+            
+            # Analyze read coverage
+            self.logger.info(f"Analyzing read coverage")
+            
+            # Create analysis objects
+            transcript_positions = defaultdict(list)
+            
+            # Open the fixed BAM file
+            bam = pysam.AlignmentFile(fixed_bam, "rb")
+            
+            # Define function to process each read
+            def process_read(read):
+                # Skip secondary or supplementary alignments
+                if read.is_secondary or read.is_supplementary:
+                    return
+                    
+                # Extract transcript ID from reference name
+                transcript_id = read.reference_name
                 
+                # Skip if not in transcript info
+                if transcript_id not in transcript_info:
+                    return
+                    
+                # Get transcript length
+                transcript_length = transcript_info[transcript_id]["length"]
+                
+                # Get read position and convert to relative position
+                read_pos = read.reference_start  # 0-based position
+                relative_pos = read_pos / transcript_length
+                
+                # Store relative position
+                transcript_positions[transcript_id].append(relative_pos)
+            
+            # Process each read
+            processed_reads = 0
+            for read in bam.fetch():
+                process_read(read)
+                processed_reads += 1
+                
+                # Log progress
+                if processed_reads % 100000 == 0:
+                    self.logger.info(f"Processed {processed_reads:,} reads")
+            
+            bam.close()
+            
+            self.logger.info(f"Processed {processed_reads:,} reads")
+            self.logger.info(f"Found {len(transcript_positions):,} transcripts with read alignments")
+            
+            # Filter transcripts with insufficient reads
+            filtered_transcripts = {
+                tid: positions for tid, positions in transcript_positions.items()
+                if len(positions) >= min_reads
+            }
+            
+            self.logger.info(f"Found {len(filtered_transcripts):,} transcripts with at least {min_reads} reads")
+            
+            if not filtered_transcripts:
+                self.logger.error(f"No transcripts with sufficient reads found")
+                return False
+            
+            # Combine all positions to get overall distribution
+            all_positions = []
+            for positions in filtered_transcripts.values():
+                all_positions.extend(positions)
+            
+            # Create position distribution
+            x, y = self._create_position_density(all_positions)
+            
+            # Store as position distribution
+            self.position_distribution = (x, y)
+            
+            # Group transcripts by length for length-dependent analysis
+            if length_bins > 1:
+                # Get lengths of all transcripts
+                transcript_lengths = [transcript_info[tid]["length"] for tid in filtered_transcripts.keys()]
+                
+                # Create length bins
+                length_bin_edges = np.percentile(transcript_lengths, np.linspace(0, 100, length_bins+1))
+                self.length_bins = list(length_bin_edges)
+                
+                self.logger.info(f"Created {length_bins} length bins: {self.length_bins}")
+                
+                # Group transcripts by length bin
+                transcript_by_bin = defaultdict(list)
+                
+                for tid, positions in filtered_transcripts.items():
+                    transcript_length = transcript_info[tid]["length"]
+                    
+                    # Find the appropriate bin
+                    bin_idx = 0
+                    for i, edge in enumerate(self.length_bins[1:]):
+                        if transcript_length > edge:
+                            bin_idx = i + 1
+                    
+                    # Store in bin
+                    transcript_by_bin[bin_idx].extend(positions)
+                
+                # Create distributions for each bin
+                length_effect = {}
+                
+                for bin_idx, positions in transcript_by_bin.items():
+                    if not positions:
+                        continue
+                        
+                    # Create distribution
+                    x_bin, y_bin = self._create_position_density(positions)
+                    
+                    # Store distribution
+                    self.length_dependent_distributions[bin_idx] = (x_bin, y_bin)
+                    
+                    # Calculate bias measure
+                    bin_5prime = np.sum(y_bin[:len(y_bin)//2])
+                    bin_3prime = np.sum(y_bin[len(y_bin)//2:])
+                    
+                    # Use the 3'/5' ratio as the effect measure
+                    # Higher values = more 3' biased
+                    if bin_5prime > 0:
+                        effect = bin_3prime / bin_5prime
+                    else:
+                        effect = 1.0
+                        
+                    length_effect[f"bin_{bin_idx+1}"] = np.float64(effect)
+                    
+                    self.logger.info(f"Length bin {bin_idx+1}: Effect={effect:.2f} " +
+                                    f"(5'={bin_5prime:.2f}, 3'={bin_3prime:.2f})")
+                
+                # Store length effect
+                self.parameters["length_effect"] = length_effect
+            else:
+                # Use one bin for all transcripts
+                self.parameters["length_effect"] = {"bin_1": np.float64(1.0)}
+            
+            # Store profile for plotting
+            self.parameters["profile"] = y
+            
+            # Set model type
+            self.model_type = "custom"
+            
+            self.logger.info(f"Successfully learned coverage bias model from BAM file")
+            return True
+            
         except Exception as e:
-            self.logger.error(f"Error learning coverage bias: {str(e)}")
+            self.logger.error(f"Error learning coverage bias model: {str(e)}")
             self.logger.error(traceback.format_exc())
             return False
-        
-        finally:
-            # Clean up temporary directory
-            import shutil
-            try:
-                shutil.rmtree(temp_dir)
-                self.logger.debug(f"Removed temporary directory: {temp_dir}")
-            except Exception as e:
-                self.logger.warning(f"Failed to remove temporary directory: {str(e)}")
 
     def _prepare_bam_file(self, bam_file):
         """
@@ -1118,14 +902,31 @@ class CoverageBiasModel:
         
         # Plot coverage profile
         x = np.linspace(0, 1, len(self.parameters["profile"]))
-        ax1.plot(x, self.parameters["profile"])
-        ax1.set_xlabel("Relative position")
-        ax1.set_ylabel("Relative coverage")
-        ax1.set_title("Coverage bias profile")
+        ax1.plot(x, self.parameters["profile"], linewidth=2.5)
+        ax1.set_xlabel("Relative position along transcript (5' → 3')", fontsize=12)
+        ax1.set_ylabel("Coverage bias factor", fontsize=12)
+        ax1.set_title("Coverage bias across transcript length", fontsize=14)
         ax1.grid(True, alpha=0.3)
         
         # Add horizontal line at y=1 (no bias)
-        ax1.axhline(y=1, color='r', linestyle='--', alpha=0.5)
+        ax1.axhline(y=1, color='r', linestyle='--', alpha=0.7, label="No bias (uniform)")
+        
+        # Add 5' and 3' end labels
+        ax1.text(0.02, 0.02, "5' end", transform=ax1.transAxes, fontsize=12, 
+                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
+        ax1.text(0.98, 0.02, "3' end", transform=ax1.transAxes, fontsize=12, 
+                 horizontalalignment='right',
+                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
+        
+        # Add explanation for bias
+        y_max = max(self.parameters["profile"])
+        y_pos = 0.8 * y_max
+        bias_type = "3' biased" if np.argmax(self.parameters["profile"]) > len(self.parameters["profile"])/2 else "5' biased"
+        ax1.text(0.5, 0.9, f"This model is {bias_type}", transform=ax1.transAxes, 
+                 fontsize=12, ha='center', va='center',
+                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
+        
+        ax1.legend(loc='upper center')
         
         # Plot length effect if available
         if "length_effect" in self.parameters and self.parameters["length_effect"]:
@@ -1135,20 +936,64 @@ class CoverageBiasModel:
             
             # Bar plot for length effect
             bar_positions = np.arange(len(groups))
-            ax2.bar(bar_positions, values)
+            bars = ax2.bar(bar_positions, values, color='steelblue')
             ax2.set_xticks(bar_positions)
-            ax2.set_xticklabels(groups, rotation=45)
-            ax2.set_xlabel("Transcript length group")
-            ax2.set_ylabel("Relative effect")
-            ax2.set_title("Length effect on coverage")
+            
+            # Create more informative x-tick labels from bin names
+            readable_labels = []
+            for g in groups:
+                if g.startswith('bin_'):
+                    bin_num = int(g.replace('bin_', ''))
+                    # Show bin numbers as transcript length groups
+                    readable_labels.append(f"Group {bin_num}")
+                else:
+                    readable_labels.append(g)
+            
+            ax2.set_xticklabels(readable_labels, rotation=45)
+            ax2.set_xlabel("Transcript length group", fontsize=12)
+            ax2.set_ylabel("Length effect strength", fontsize=12)
+            ax2.set_title("Effect of transcript length on coverage bias", fontsize=14)
             ax2.grid(True, alpha=0.3)
             
             # Add horizontal line at y=1 (no effect)
-            ax2.axhline(y=1, color='r', linestyle='--', alpha=0.5)
+            ax2.axhline(y=1, color='r', linestyle='--', alpha=0.7, label="No effect")
+            ax2.legend()
+            
+            # Add value labels on top of bars
+            for bar in bars:
+                height = bar.get_height()
+                ax2.text(bar.get_x() + bar.get_width()/2., height + 0.05,
+                        f'{height:.2f}', ha='center', va='bottom', fontsize=10)
         
-        # Add title
-        fig.suptitle(f"Coverage Bias Model: {self.model_type}")
-        plt.tight_layout()
+        # Add informative title and explanation
+        model_desc = {
+            "10x_cdna": "10x Chromium cDNA (typically 3' biased)",
+            "direct_rna": "Direct RNA sequencing (typically 5' biased)",
+            "custom": "Custom coverage model learned from data"
+        }.get(self.model_type, self.model_type)
+        
+        # Add badge to indicate if it's a default or custom model
+        is_default = self.model_type in ["10x_cdna", "direct_rna"]
+        model_status = "DEFAULT MODEL" if is_default else "CUSTOM MODEL"
+        status_color = "orange" if is_default else "green"
+        
+        fig.suptitle(f"Coverage Bias Model: {model_desc}", fontsize=16)
+        
+        # Add a badge showing if it's a default or custom model
+        fig.text(0.01, 0.97, model_status, 
+                fontsize=10, ha='left', va='top', weight='bold',
+                bbox=dict(facecolor=status_color, alpha=0.7, boxstyle='round,pad=0.5'))
+        
+        # Add an explanatory text box at the bottom
+        explanation = (
+            "EXPLANATION: This plot shows how read coverage varies across transcript length.\n"
+            "LEFT: Values >1 indicate over-representation, <1 indicate under-representation at that position.\n"
+            "RIGHT: How transcript length affects the strength of the coverage bias."
+        )
+        fig.text(0.5, 0.01, explanation, ha='center', va='bottom', fontsize=11,
+                bbox=dict(facecolor='lightyellow', alpha=0.9, boxstyle='round,pad=0.5'))
+        
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
         
         # Save figure if output file is specified
         if output_file:

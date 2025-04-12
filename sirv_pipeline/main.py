@@ -19,12 +19,13 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
 import subprocess
 import shutil
+import numpy as np
 
 from sirv_pipeline.mapping import map_sirv_reads, create_alignment, process_sirv_bams, extract_fastq_from_bam, create_simple_gtf_from_fasta, parse_transcripts_from_gtf
 from sirv_pipeline.integration import add_sirv_to_dataset
-from sirv_pipeline.coverage_bias import CoverageBiasModel, model_transcript_coverage
+from sirv_pipeline.coverage_bias import CoverageBiasModel, model_transcript_coverage, create_coverage_bias_model
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
-from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files, create_combined_reference, fix_bam_file, analyze_bam_file
+from sirv_pipeline.utils import setup_logger, check_dependencies, validate_files, create_combined_reference, fix_bam_file, analyze_bam_file, is_samtools_available
 
 
 def load_pipeline_state(output_dir: str) -> Dict[str, Any]:
@@ -112,66 +113,62 @@ def is_step_completed(state: Dict[str, Any], step_name: str) -> bool:
 
 
 def prepare_flames_bam(args: argparse.Namespace, state: Dict[str, Any]) -> Optional[str]:
-    """
-    Prepare the FLAMES BAM file for coverage bias learning.
-    
-    Args:
-        args: Command line arguments
-        state: Pipeline state
-        
-    Returns:
-        str: Path to fixed FLAMES BAM file or None if not available
-    """
+    """Prepare and fix the FLAMES BAM file for coverage modeling."""
     logger = logging.getLogger(__name__)
     
-    # Check if this step is already completed
+    if not args.learn_coverage_from or not os.path.exists(args.learn_coverage_from):
+        logger.info("No FLAMES BAM file provided for coverage modeling")
+        return None
+    
+    # Check if we've already prepared a fixed BAM
     if is_step_completed(state, "prepare_flames_bam"):
-        fixed_bam = state["completed_steps"]["prepare_flames_bam"]["metadata"].get("fixed_bam_path")
-        if fixed_bam and os.path.exists(fixed_bam) and os.path.exists(fixed_bam + ".bai"):
-            logger.info(f"Using previously fixed FLAMES BAM file: {fixed_bam}")
-            return fixed_bam
+        fixed_bam_path = state["completed_steps"]["prepare_flames_bam"]["metadata"].get("fixed_bam_path")
+        if fixed_bam_path and os.path.exists(fixed_bam_path):
+            logger.info(f"Using previously fixed FLAMES BAM file: {fixed_bam_path}")
+            return fixed_bam_path
     
-    # Check if FLAMES BAM is provided
-    if not args.learn_coverage_from:
-        logger.info("No FLAMES BAM file provided for coverage bias learning")
-        return None
+    # Create output directory for fixed BAM files
+    fixed_bams_dir = os.path.join(args.output_dir, "fixed_bams")
+    os.makedirs(fixed_bams_dir, exist_ok=True)
     
-    flames_bam = args.learn_coverage_from
+    # Fix FLAMES BAM files
+    logger.info(f"Fixing FLAMES BAM file: {args.learn_coverage_from}")
     
-    # Check if the file exists
-    if not os.path.exists(flames_bam):
-        logger.warning(f"FLAMES BAM file not found: {flames_bam}")
-        return None
+    # Extract base filename without extension
+    bam_basename = os.path.basename(args.learn_coverage_from)
+    if bam_basename.endswith(".bam"):
+        bam_basename = bam_basename[:-4]
     
-    # Create directory for fixed files
-    fixed_dir = os.path.join(args.output_dir, "fixed_bams")
-    os.makedirs(fixed_dir, exist_ok=True)
+    # Create fixed BAM path
+    fixed_bam_path = os.path.join(fixed_bams_dir, f"fixed_{bam_basename}.bam")
     
-    # Create a name for the fixed BAM file
-    bam_basename = os.path.basename(flames_bam)
-    fixed_bam = os.path.join(fixed_dir, f"fixed_{bam_basename}")
-    
-    # First, analyze the BAM file
-    logger.info(f"Analyzing FLAMES BAM file: {flames_bam}")
-    analysis = analyze_bam_file(flames_bam, sample_size=1000)
-    
-    # Log some information about the BAM file
-    logger.info(f"BAM file has {analysis.get('reference_count', 0)} references")
-    logger.info(f"BAM file has approximately {analysis.get('read_count', 'unknown')} reads")
-    logger.info(f"BAM file is sorted: {analysis.get('is_sorted', False)}")
-    logger.info(f"BAM file has index: {analysis.get('has_index', False)}")
-    
-    # Fix the BAM file
-    logger.info(f"Fixing FLAMES BAM file: {flames_bam}")
-    success = fix_bam_file(flames_bam, fixed_bam, create_index=True)
-    
-    if success:
-        logger.info(f"Successfully fixed FLAMES BAM file: {fixed_bam}")
-        mark_step_completed(state, "prepare_flames_bam", {"fixed_bam_path": fixed_bam})
+    # Run fixBAM script
+    try:
+        from sirv_pipeline.utils import fix_bam
+        fixed = fix_bam(args.learn_coverage_from, fixed_bam_path, threads=args.threads)
+        
+        if not fixed:
+            logger.error("Failed to fix FLAMES BAM file")
+            return None
+        
+        logger.info(f"Fixed FLAMES BAM file saved to: {fixed_bam_path}")
+        
+        # Create index for fixed BAM
+        logger.info(f"Creating index for fixed BAM file")
+        subprocess.run(["samtools", "index", fixed_bam_path], check=True)
+        
+        # Mark step as completed
+        mark_step_completed(state, "prepare_flames_bam", {
+            "fixed_bam_path": fixed_bam_path
+        })
         save_pipeline_state(args.output_dir, state)
-        return fixed_bam
-    else:
-        logger.error(f"Failed to fix FLAMES BAM file: {flames_bam}")
+        
+        return fixed_bam_path
+        
+    except Exception as e:
+        logger.error(f"Error fixing FLAMES BAM file: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 
@@ -552,7 +549,10 @@ def parse_args() -> argparse.Namespace:
     # Coverage bias modeling arguments
     coverage_group = parser.add_argument_group("Coverage Bias Modeling")
     coverage_group.add_argument(
-        "--coverage-model", type=str, choices=["10x_cdna", "direct_rna", "custom"], default="10x_cdna",
+        "--coverage-model", type=str, 
+        choices=["10x_cdna", "direct_rna", "custom", 
+                 "ml_gradient_boosting", "ml_random_forest", "ml_ridge"], 
+        default="10x_cdna",
         help="Type of coverage bias model to use (default: 10x_cdna)"
     )
     coverage_group.add_argument(
@@ -578,6 +578,10 @@ def parse_args() -> argparse.Namespace:
     coverage_group.add_argument(
         "--disable-coverage-bias", action="store_true",
         help="Disable coverage bias modeling"
+    )
+    coverage_group.add_argument(
+        "--extract-features", action="store_true",
+        help="Extract sequence features for ML models (requires BioPython and pyfaidx)"
     )
     
     # Common arguments
