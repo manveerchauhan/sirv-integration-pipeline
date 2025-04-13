@@ -400,6 +400,8 @@ def process_sirv_bams(
     Returns:
         str: Path to the output CSV file with read-to-transcript mappings
     """
+    import traceback
+    
     # Validate input files
     for bam_file in bam_files:
         validate_files(bam_file, mode='r')
@@ -411,6 +413,39 @@ def process_sirv_bams(
     logger.info(f"Creating temporary directory: {temp_dir}")
 
     try:
+        # Check BAM file integrity first
+        for bam_file in bam_files:
+            logger.info(f"Checking integrity of BAM file: {bam_file}")
+            try:
+                # Run samtools quickcheck to verify BAM integrity
+                result = subprocess.run(
+                    [SAMTOOLS_PATH, "quickcheck", "-v", bam_file], 
+                    check=False, 
+                    stderr=subprocess.PIPE
+                )
+                if result.returncode != 0:
+                    logger.warning(f"BAM file {bam_file} may be corrupt or truncated: {result.stderr.decode('utf-8')}")
+                    logger.info(f"Attempting to fix BAM file: {bam_file}")
+                    
+                    # Create a fixed version of the BAM file
+                    fixed_bam = os.path.join(temp_dir, os.path.basename(bam_file) + ".fixed.bam")
+                    
+                    # Use the view command to attempt to recover readable portions
+                    view_cmd = [SAMTOOLS_PATH, "view", "-h", "-b", bam_file, "-o", fixed_bam]
+                    view_result = subprocess.run(view_cmd, check=False, stderr=subprocess.PIPE)
+                    
+                    if view_result.returncode != 0:
+                        logger.error(f"Could not fix BAM file {bam_file}: {view_result.stderr.decode('utf-8')}")
+                        raise ValueError(f"Could not process BAM file {bam_file}, it may be severely corrupted")
+                    
+                    # Replace the original BAM reference with the fixed one
+                    logger.info(f"Using fixed BAM file: {fixed_bam}")
+                    bam_files[bam_files.index(bam_file)] = fixed_bam
+            except Exception as e:
+                logger.error(f"Error checking BAM file {bam_file}: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise ValueError(f"Could not process BAM file {bam_file}: {str(e)}")
+
         # If there's only one BAM file, just use it directly
         if len(bam_files) == 1:
             logger.info(f"Using single BAM file: {bam_files[0]}")
@@ -428,37 +463,76 @@ def process_sirv_bams(
                     shutil.copy2(bam_index, merged_bam_index)
                 else:
                     # Sort the BAM file before indexing if no index exists
-                    sorted_bam = merged_bam + ".sorted.bam"
+                    sorted_bam = os.path.join(temp_dir, "sorted.bam")
                     logger.info(f"Sorting BAM file: {merged_bam}")
-                    sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
-                    subprocess.run(sort_cmd, check=True)
-                    
-                    # Replace the original BAM with the sorted one
-                    os.replace(sorted_bam, merged_bam)
-                    
-                    # Index the BAM file
-                    logger.info(f"Indexing BAM file: {merged_bam}")
-                    subprocess.run([SAMTOOLS_PATH, "index", merged_bam], check=True)
+                    try:
+                        sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
+                        subprocess.run(sort_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                        
+                        # Replace the original BAM with the sorted one
+                        shutil.move(sorted_bam, merged_bam)
+                        
+                        # Index the BAM file
+                        logger.info(f"Indexing BAM file: {merged_bam}")
+                        index_cmd = [SAMTOOLS_PATH, "index", merged_bam]
+                        subprocess.run(index_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                    except subprocess.CalledProcessError as e:
+                        logger.error(f"Error during BAM processing: {e}")
+                        logger.error(f"Command output: {e.stdout.decode('utf-8') if e.stdout else ''}")
+                        logger.error(f"Command error: {e.stderr.decode('utf-8') if e.stderr else ''}")
+                        raise
             
         else:
             # We need to merge multiple BAM files
             logger.info(f"Merging {len(bam_files)} BAM files")
             
-            # Merge BAM files using samtools
-            merge_cmd = [SAMTOOLS_PATH, "merge", "-f", "-@", str(threads), merged_bam] + bam_files
-            subprocess.run(merge_cmd, check=True)
+            # Process each BAM file separately first to ensure they're all valid
+            processed_bams = []
+            for i, bam_file in enumerate(bam_files):
+                processed_bam = os.path.join(temp_dir, f"processed_{i}.bam")
+                try:
+                    # Convert to BAM to ensure consistency
+                    logger.info(f"Pre-processing BAM file {i+1}/{len(bam_files)}: {bam_file}")
+                    view_cmd = [SAMTOOLS_PATH, "view", "-h", "-b", bam_file, "-o", processed_bam]
+                    subprocess.run(view_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                    
+                    # Verify the processed BAM
+                    check_cmd = [SAMTOOLS_PATH, "quickcheck", "-v", processed_bam]
+                    check_result = subprocess.run(check_cmd, check=False, stderr=subprocess.PIPE)
+                    if check_result.returncode == 0:
+                        processed_bams.append(processed_bam)
+                    else:
+                        logger.warning(f"Skipping corrupted BAM file: {bam_file}")
+                except Exception as e:
+                    logger.error(f"Error processing BAM file {bam_file}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    # Continue with other files
             
-            # Sort the BAM file before indexing
-            sorted_bam = merged_bam + ".sorted.bam"
-            logger.info(f"Sorting BAM file: {merged_bam}")
-            sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
-            subprocess.run(sort_cmd, check=True)
+            if not processed_bams:
+                raise ValueError("No valid BAM files to process after pre-processing")
             
-            # Replace the original BAM with the sorted one
-            os.replace(sorted_bam, merged_bam)
-            
-            logger.info(f"Indexing BAM file: {merged_bam}")
-            subprocess.run([SAMTOOLS_PATH, "index", merged_bam], check=True)
+            # Merge the processed BAM files
+            try:
+                merge_cmd = [SAMTOOLS_PATH, "merge", "-f", "-@", str(threads), merged_bam] + processed_bams
+                subprocess.run(merge_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                
+                # Sort the BAM file before indexing
+                sorted_bam = os.path.join(temp_dir, "sorted.bam")
+                logger.info(f"Sorting BAM file: {merged_bam}")
+                sort_cmd = [SAMTOOLS_PATH, "sort", "-o", sorted_bam, merged_bam]
+                subprocess.run(sort_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                
+                # Replace the original BAM with the sorted one
+                shutil.move(sorted_bam, merged_bam)
+                
+                logger.info(f"Indexing BAM file: {merged_bam}")
+                index_cmd = [SAMTOOLS_PATH, "index", merged_bam]
+                subprocess.run(index_cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error during BAM merging/sorting: {e}")
+                logger.error(f"Command output: {e.stdout.decode('utf-8') if e.stdout else ''}")
+                logger.error(f"Command error: {e.stderr.decode('utf-8') if e.stderr else ''}")
+                raise
         
         # Load transcript info from GTF
         transcripts = parse_transcripts_from_gtf(sirv_gtf)
@@ -481,7 +555,8 @@ def process_sirv_bams(
         return output_csv
         
     except Exception as e:
-        logger.error(f"Error processing SIRV BAMs: {e}")
+        logger.error(f"Error processing SIRV BAMs: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
     finally:
         # Clean up temporary directory
@@ -489,43 +564,73 @@ def process_sirv_bams(
         shutil.rmtree(temp_dir)
 
 # Modification to create_simple_gtf_from_fasta function
-def create_simple_gtf_from_fasta(fasta_file, local_fasta):
+def create_simple_gtf_from_fasta(fasta_file, output_gtf_file):
     """
     Create a simple GTF file from a FASTA reference.
     Each sequence in the FASTA file becomes a transcript.
+    
+    Args:
+        fasta_file (str): Path to the input FASTA file
+        output_gtf_file (str): Path to the output GTF file
+    
+    Returns:
+        str: Path to the created GTF file
     """
     import os
     import shutil
     import logging
+    import subprocess
+    import traceback
     from Bio import SeqIO
     
     logger = logging.getLogger(__name__)
     logger.info(f"Creating simple GTF file from FASTA: {fasta_file}")
     
-    # Only copy if source and destination are different files
-    if os.path.abspath(fasta_file) != os.path.abspath(local_fasta):
-        shutil.copy2(fasta_file, local_fasta)
+    # Check if FASTA index exists, create if it doesn't
+    fai_file = f"{fasta_file}.fai"
+    if not os.path.exists(fai_file):
+        logger.info(f"FASTA index not found. Creating index for {fasta_file}")
+        try:
+            subprocess.run(["samtools", "faidx", fasta_file], check=True)
+        except Exception as e:
+            logger.error(f"Failed to create FASTA index: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Fallback to using Bio.SeqIO to read sequences directly
+            logger.info("Using BioPython to read sequences directly")
+            with open(output_gtf_file, 'w') as gtf:
+                gtf.write('##gff-version 3\n')
+                for record in SeqIO.parse(fasta_file, "fasta"):
+                    seq_id = record.id
+                    seq_length = len(record.seq)
+                    # Write transcript feature
+                    gtf.write(f"{seq_id}\tSIRV\ttranscript\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+                    # Write exon feature
+                    gtf.write(f"{seq_id}\tSIRV\texon\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+            logger.info(f"Created GTF file: {output_gtf_file}")
+            return output_gtf_file
     
-    # Create GTF file path from FASTA path
-    gtf_file = os.path.splitext(local_fasta)[0] + '.gtf'
+    # Create GTF file from FASTA index
+    try:
+        with open(output_gtf_file, 'w') as gtf:
+            # Write header
+            gtf.write('##gff-version 3\n')
+            
+            # Read FASTA index
+            with open(fai_file, 'r') as fai:
+                for line in fai:
+                    fields = line.strip().split('\t')
+                    seq_id = fields[0]
+                    seq_length = fields[1]
+                    
+                    # Write transcript feature
+                    gtf.write(f"{seq_id}\tSIRV\ttranscript\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+                    
+                    # Write exon feature
+                    gtf.write(f"{seq_id}\tSIRV\texon\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
+    except Exception as e:
+        logger.error(f"Error creating GTF file: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
     
-    # Create GTF file
-    with open(gtf_file, 'w') as gtf:
-        # Write header
-        gtf.write('##gff-version 3\n')
-        
-        # Read FASTA index
-        with open(f"{local_fasta}.fai", 'r') as fai:
-            for line in fai:
-                fields = line.strip().split('\t')
-                seq_id = fields[0]
-                seq_length = fields[1]
-                
-                # Write transcript feature
-                gtf.write(f"{seq_id}\tSIRV\ttranscript\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
-                
-                # Write exon feature
-                gtf.write(f"{seq_id}\tSIRV\texon\t1\t{seq_length}\t.\t+\t.\ttranscript_id \"{seq_id}\"; gene_id \"{seq_id}\";\n")
-    
-    logger.info(f"Created GTF file: {gtf_file}")
-    return gtf_file
+    logger.info(f"Created GTF file: {output_gtf_file}")
+    return output_gtf_file

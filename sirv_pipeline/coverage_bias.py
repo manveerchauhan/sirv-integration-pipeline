@@ -5,8 +5,7 @@ This module analyzes BAM files to model 5'-3' coverage bias for
 transcript integration.
 
 Note: This module includes the complete functionality for coverage bias modeling,
-      including both the model itself and the learning algorithms. A deprecated
-      version of the learning code was previously in models/coverage_learner.py.
+      including both the model itself and the learning algorithms.
 """
 
 import os
@@ -39,36 +38,40 @@ class CoverageBiasModel:
     This model can represent several types of coverage bias:
     - 10x_cdna: 3' biased coverage common in 10X Chromium cDNA preparation
     - direct_rna: 5' biased coverage common in direct RNA sequencing
-    - custom: Learned from actual aligned reads
+    - custom: Learned from actual aligned reads using simple density estimation
+    - random_forest: Uses random forest ML to model complex coverage patterns
     
     The model can be saved to and loaded from pickle files for reuse.
     """
     
-    def __init__(self, model_type="10x_cdna", 
+    def __init__(self, model_type="random_forest", 
                  bin_count=100, 
                  smoothing_factor=0.05,
                  seed=None,
                  length_bins=10,
                  logger=None,
-                 parameters=None):
+                 parameters=None,
+                 force_custom_model=False):
         """
         Initialize the coverage bias model.
         
         Args:
-            model_type: Type of model ('10x_cdna', 'direct_rna', or 'custom')
+            model_type: Type of model ('10x_cdna', 'direct_rna', 'custom', 'random_forest', 'ml_gradient_boosting')
             bin_count: Number of bins to divide transcripts into
             smoothing_factor: Smoothing factor for kernel density estimation
             seed: Random seed for reproducibility
-            length_bins: Number of bins to divide transcripts into for modeling.
-            logger: Logger object for logging information and errors.
+            length_bins: Number of bins to divide transcripts into for modeling
+            logger: Logger object for logging information and errors
             parameters: Optional pre-defined parameters dictionary. If provided,
-                        this will override the default model parameters.
+                        this will override the default model parameters
+            force_custom_model: If True, always use the custom model even if ML model type is specified
         """
         # Initialize model parameters
         self.model_type = model_type
         self.bin_count = bin_count
         self.smoothing_factor = smoothing_factor
         self.seed = seed
+        self.force_custom_model = force_custom_model
         
         # Set random seed if provided
         if seed is not None:
@@ -96,12 +99,22 @@ class CoverageBiasModel:
             self._init_default_10x_cdna_model()
         elif model_type == "direct_rna":
             self._init_default_direct_rna_model()
-        elif model_type == "custom":
+        elif model_type in ["custom", "random_forest", "ml_gradient_boosting"]:
             # Initialize with uniform distribution
             # This should be updated by calling learn_from_bam later
             self._init_custom_uniform_model()
+            if model_type in ["random_forest", "ml_gradient_boosting"]:
+                self.logger.info(f"Initialized {model_type} model with uniform distribution")
+                self.logger.info("Will apply ML-based learning when learn_from_bam is called")
         else:
-            raise ValueError(f"Unknown model type: {model_type}")
+            # For backward compatibility
+            if model_type == "ml_random_forest":
+                self.model_type = "random_forest"
+                self._init_custom_uniform_model()
+                self.logger.info("Using random forest model for ML coverage modeling")
+                self.logger.info("Will apply ML-based learning when learn_from_bam is called")
+            else:
+                raise ValueError(f"Unknown model type: {model_type}. Use one of: 10x_cdna, direct_rna, custom, random_forest, ml_gradient_boosting")
     
     def _load_from_parameters(self, parameters):
         """
@@ -275,28 +288,106 @@ class CoverageBiasModel:
     def learn_from_bam(self, bam_file, annotation_file, min_reads=100, length_bins=5):
         """Learn coverage bias from a BAM file.
         
-        This analyzes read alignments to transcripts to build a custom
-        coverage bias model.
-        
         Args:
-            bam_file (str): Path to BAM file
-            annotation_file (str): Path to annotation file (GTF)
-            min_reads (int): Minimum number of reads required for learning
-            length_bins (int): Number of bins for transcript length distribution
+            bam_file (str): Path to the BAM file.
+            annotation_file (str): Path to the annotation file (GTF).
+            min_reads (int): Minimum number of reads required for learning.
+            length_bins (int): Number of bins for transcript length distribution.
             
         Returns:
-            bool: True if learning was successful, False otherwise
+            bool: Success flag.
         """
+        # Import required libraries
         import pysam
-        import numpy as np
-        import tempfile
         import os
-        import subprocess
-        from collections import defaultdict
-        import re
+        import numpy as np
         import traceback
+        from collections import defaultdict
+
+        # Choose model type based on configuration
+        if (self.model_type == "random_forest" or self.model_type == "ml_gradient_boosting") and not self.force_custom_model:
+            # Try to use ML model if possible
+            self.logger.info(f"Attempting to use ML model '{self.model_type}' for coverage bias learning")
+            
+            try:
+                # Import ML coverage model
+                from sirv_pipeline.ml_coverage_model import MLCoverageBiasModel
+                
+                # Find reference FASTA file if it exists in the same directory
+                reference_file = None
+                
+                # Try to find reference in the annotation directory
+                annotation_dir = os.path.dirname(annotation_file)
+                potential_reference_files = [
+                    os.path.join(annotation_dir, "reference.fa"),
+                    os.path.join(annotation_dir, "reference.fasta"),
+                    os.path.join(annotation_dir, "genome.fa"),
+                    os.path.join(annotation_dir, "genome.fasta")
+                ]
+                
+                for pot_ref in potential_reference_files:
+                    if os.path.exists(pot_ref):
+                        reference_file = pot_ref
+                        break
+                
+                if not reference_file:
+                    self.logger.warning("Reference FASTA file not found. Feature extraction will be limited.")
+                
+                # Use the specified ML model type
+                ml_model_type = self.model_type
+                
+                self.logger.info(f"Creating ML coverage model with {ml_model_type}")
+                
+                # Initialize the ML model with optimized parameters
+                ml_model = MLCoverageBiasModel(
+                    model_type=ml_model_type,
+                    bin_count=self.bin_count,
+                    seed=self.seed,
+                    logger=self.logger
+                )
+                
+                # Learn from BAM file
+                success = ml_model.learn_from_bam(
+                    bam_file=bam_file,
+                    reference_file=reference_file if reference_file else None,
+                    annotation_file=annotation_file,
+                    min_reads=min_reads,
+                    feature_extraction=True if reference_file else False
+                )
+                
+                if not success:
+                    self.logger.error(f"Failed to learn ML coverage model from BAM file")
+                    return False
+                
+                # Copy parameters from ML model
+                self.position_distribution = ml_model.position_distribution
+                self.length_dependent_distributions = ml_model.length_dependent_distributions
+                self.parameters = ml_model.parameters
+                self.parameters["model_type"] = ml_model_type  # Store the actual model type used
+                
+                # Store the ML model instance for visualization and other advanced features
+                self.ml_model = ml_model
+                
+                # Store training data for visualizations
+                if hasattr(ml_model, 'X_train'):
+                    self.X_train = ml_model.X_train
+                    self.X_val = ml_model.X_val 
+                    self.y_train = ml_model.y_train
+                    self.y_val = ml_model.y_val
+                    self.model = ml_model.model
+                
+                self.logger.info(f"Successfully learned {ml_model_type} coverage model from BAM file")
+                return True
+                
+            except ImportError:
+                self.logger.error("ML coverage model module not found. Falling back to standard model.")
+                self.model_type = "custom"  # Fall back to custom model
+            except Exception as e:
+                self.logger.error(f"Error creating ML coverage model: {str(e)}")
+                self.logger.error(traceback.format_exc())
+                self.model_type = "custom"  # Fall back to custom model
         
-        self.logger.info(f"Learning coverage bias from BAM file: {bam_file}")
+        # For non-ML models or fallback
         self.model_type = "custom"  # Mark as custom model
         
         # Create a temporary directory
@@ -395,121 +486,130 @@ class CoverageBiasModel:
                 read_pos = read.reference_start  # 0-based position
                 relative_pos = read_pos / transcript_length
                 
-                # Store relative position
+                # Add to positions list for this transcript
                 transcript_positions[transcript_id].append(relative_pos)
             
             # Process each read
-            processed_reads = 0
-            for read in bam.fetch():
+            num_reads = 0
+            for read in bam.fetch(until_eof=True):
                 process_read(read)
-                processed_reads += 1
+                num_reads += 1
                 
                 # Log progress
-                if processed_reads % 100000 == 0:
-                    self.logger.info(f"Processed {processed_reads:,} reads")
+                if num_reads % 100000 == 0:
+                    self.logger.info(f"Processed {num_reads:,} reads for coverage analysis")
             
+            self.logger.info(f"Completed coverage analysis, processed {num_reads:,} reads")
+            
+            # Close BAM file
             bam.close()
             
-            self.logger.info(f"Processed {processed_reads:,} reads")
-            self.logger.info(f"Found {len(transcript_positions):,} transcripts with read alignments")
-            
-            # Filter transcripts with insufficient reads
+            # Filter transcripts with too few reads
             filtered_transcripts = {
-                tid: positions for tid, positions in transcript_positions.items()
+                transcript_id: positions 
+                for transcript_id, positions in transcript_positions.items() 
                 if len(positions) >= min_reads
             }
             
+            if not filtered_transcripts:
+                self.logger.error(f"No transcripts with at least {min_reads} reads found")
+                return False
+                
             self.logger.info(f"Found {len(filtered_transcripts):,} transcripts with at least {min_reads} reads")
             
-            if not filtered_transcripts:
-                self.logger.error(f"No transcripts with sufficient reads found")
-                return False
-            
-            # Combine all positions to get overall distribution
+            # Combine all positions to create overall distribution
             all_positions = []
             for positions in filtered_transcripts.values():
                 all_positions.extend(positions)
+                
+            if not all_positions:
+                self.logger.error("No positions found for analysis")
+                return False
+                
+            self.logger.info(f"Analyzing {len(all_positions):,} read positions")
             
             # Create position distribution
-            x, y = self._create_position_density(all_positions)
+            position_distribution = self._create_position_density(all_positions)
+            self.position_distribution = position_distribution
             
-            # Store as position distribution
-            self.position_distribution = (x, y)
-            
-            # Group transcripts by length for length-dependent analysis
+            # Create length-dependent distributions if length_bins > 1
             if length_bins > 1:
-                # Get lengths of all transcripts
-                transcript_lengths = [transcript_info[tid]["length"] for tid in filtered_transcripts.keys()]
+                # Group transcripts by length
+                length_bins_edges = self._create_length_bins(
+                    [transcript_info[tid]["length"] for tid in filtered_transcripts.keys()],
+                    length_bins
+                )
                 
-                # Create length bins
-                length_bin_edges = np.percentile(transcript_lengths, np.linspace(0, 100, length_bins+1))
-                self.length_bins = list(length_bin_edges)
+                self.logger.info(f"Created {len(length_bins_edges)-1} length bins: {length_bins_edges}")
                 
-                self.logger.info(f"Created {length_bins} length bins: {self.length_bins}")
-                
-                # Group transcripts by length bin
-                transcript_by_bin = defaultdict(list)
-                
-                for tid, positions in filtered_transcripts.items():
-                    transcript_length = transcript_info[tid]["length"]
+                # Create distribution for each length bin
+                for bin_idx in range(len(length_bins_edges) - 1):
+                    bin_min = length_bins_edges[bin_idx]
+                    bin_max = length_bins_edges[bin_idx + 1]
                     
-                    # Find the appropriate bin
-                    bin_idx = 0
-                    for i, edge in enumerate(self.length_bins[1:]):
-                        if transcript_length > edge:
-                            bin_idx = i + 1
+                    # Get transcripts in this bin
+                    bin_transcripts = {
+                        tid: positions
+                        for tid, positions in filtered_transcripts.items()
+                        if bin_min <= transcript_info[tid]["length"] < bin_max
+                    }
                     
-                    # Store in bin
-                    transcript_by_bin[bin_idx].extend(positions)
-                
-                # Create distributions for each bin
-                length_effect = {}
-                
-                for bin_idx, positions in transcript_by_bin.items():
-                    if not positions:
-                        continue
+                    # Combine positions
+                    bin_positions = []
+                    for positions in bin_transcripts.values():
+                        bin_positions.extend(positions)
                         
-                    # Create distribution
-                    x_bin, y_bin = self._create_position_density(positions)
-                    
-                    # Store distribution
-                    self.length_dependent_distributions[bin_idx] = (x_bin, y_bin)
-                    
-                    # Calculate bias measure
-                    bin_5prime = np.sum(y_bin[:len(y_bin)//2])
-                    bin_3prime = np.sum(y_bin[len(y_bin)//2:])
-                    
-                    # Use the 3'/5' ratio as the effect measure
-                    # Higher values = more 3' biased
-                    if bin_5prime > 0:
-                        effect = bin_3prime / bin_5prime
+                    if not bin_positions:
+                        self.logger.warning(f"No positions found for length bin {bin_idx+1} ({bin_min}-{bin_max})")
+                        # Use overall distribution as fallback
+                        self.length_dependent_distributions[bin_idx] = position_distribution
                     else:
-                        effect = 1.0
+                        # Create distribution for this bin
+                        bin_distribution = self._create_position_density(bin_positions)
+                        self.length_dependent_distributions[bin_idx] = bin_distribution
                         
-                    length_effect[f"bin_{bin_idx+1}"] = np.float64(effect)
-                    
-                    self.logger.info(f"Length bin {bin_idx+1}: Effect={effect:.2f} " +
-                                    f"(5'={bin_5prime:.2f}, 3'={bin_3prime:.2f})")
-                
-                # Store length effect
-                self.parameters["length_effect"] = length_effect
+                    self.logger.info(f"Length bin {bin_idx+1} ({bin_min}-{bin_max}): "
+                                    f"{len(bin_transcripts)} transcripts, {len(bin_positions)} positions")
             else:
-                # Use one bin for all transcripts
-                self.parameters["length_effect"] = {"bin_1": np.float64(1.0)}
+                # Use the same distribution for all length bins
+                self.length_dependent_distributions[0] = position_distribution
             
-            # Store profile for plotting
-            self.parameters["profile"] = y
+            # Update parameters
+            self.parameters["profile"] = position_distribution[1]
             
-            # Set model type
-            self.model_type = "custom"
+            # Calculate length effect parameters
+            length_effect = {}
+            for bin_idx, (_, distribution) in self.length_dependent_distributions.items():
+                # Calculate effect measure (3'/5' ratio)
+                half_idx = len(distribution) // 2
+                bin_5prime = np.sum(distribution[:half_idx])
+                bin_3prime = np.sum(distribution[half_idx:])
+                
+                if bin_5prime > 0:
+                    effect = bin_3prime / bin_5prime
+                else:
+                    effect = 1.0
+                    
+                length_effect[f"bin_{bin_idx+1}"] = np.float64(effect)
+                
+            self.parameters["length_effect"] = length_effect
+            self.parameters["model_type"] = "custom"
             
-            self.logger.info(f"Successfully learned coverage bias model from BAM file")
+            self.logger.info(f"Successfully learned custom coverage model from BAM file")
             return True
             
         except Exception as e:
-            self.logger.error(f"Error learning coverage bias model: {str(e)}")
+            self.logger.error(f"Error learning coverage model: {str(e)}")
             self.logger.error(traceback.format_exc())
             return False
+        finally:
+            # Clean up temporary directory
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+                self.logger.info(f"Cleaned up temporary directory: {temp_dir}")
+            except:
+                self.logger.warning(f"Failed to clean up temporary directory: {temp_dir}")
 
     def _prepare_bam_file(self, bam_file):
         """
@@ -897,36 +997,52 @@ class CoverageBiasModel:
         import numpy as np
         import os
         
-        # Create figure
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        # Create figure - increase figure size for more whitespace
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 10))
         
         # Plot coverage profile
         x = np.linspace(0, 1, len(self.parameters["profile"]))
-        ax1.plot(x, self.parameters["profile"], linewidth=2.5)
-        ax1.set_xlabel("Relative position along transcript (5' → 3')", fontsize=12)
-        ax1.set_ylabel("Coverage bias factor", fontsize=12)
-        ax1.set_title("Coverage bias across transcript length", fontsize=14)
+        ax1.plot(x, self.parameters["profile"], linewidth=3, color='#1f77b4')
+        ax1.set_xlabel("Relative position along transcript (5' → 3')", fontsize=14)
+        ax1.set_ylabel("Coverage bias factor", fontsize=14)
+        ax1.set_title("Coverage bias across transcript length", fontsize=16)
         ax1.grid(True, alpha=0.3)
+        ax1.tick_params(axis='both', which='major', labelsize=12)
         
         # Add horizontal line at y=1 (no bias)
-        ax1.axhline(y=1, color='r', linestyle='--', alpha=0.7, label="No bias (uniform)")
+        ax1.axhline(y=1, color='r', linestyle='--', alpha=0.7, linewidth=2, label="No bias (uniform)")
         
         # Add 5' and 3' end labels
-        ax1.text(0.02, 0.02, "5' end", transform=ax1.transAxes, fontsize=12, 
-                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
-        ax1.text(0.98, 0.02, "3' end", transform=ax1.transAxes, fontsize=12, 
+        ax1.text(0.02, 0.02, "5' end", transform=ax1.transAxes, fontsize=14, 
+                 bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5', edgecolor='black'))
+        ax1.text(0.98, 0.02, "3' end", transform=ax1.transAxes, fontsize=14, 
                  horizontalalignment='right',
-                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
+                 bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5', edgecolor='black'))
         
         # Add explanation for bias
         y_max = max(self.parameters["profile"])
-        y_pos = 0.8 * y_max
         bias_type = "3' biased" if np.argmax(self.parameters["profile"]) > len(self.parameters["profile"])/2 else "5' biased"
-        ax1.text(0.5, 0.9, f"This model is {bias_type}", transform=ax1.transAxes, 
-                 fontsize=12, ha='center', va='center',
-                 bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.5'))
         
-        ax1.legend(loc='upper center')
+        if bias_type == "3' biased":
+            bias_explanation = "More reads cover the 3' end of transcripts"
+        else:
+            bias_explanation = "More reads cover the 5' end of transcripts"
+            
+        ax1.text(0.5, 0.95, f"This model is {bias_type}", transform=ax1.transAxes, 
+                 fontsize=14, ha='center', va='center',
+                 bbox=dict(facecolor='lightyellow', alpha=0.9, edgecolor='orange', boxstyle='round,pad=0.5'))
+        
+        ax1.text(0.5, 0.85, bias_explanation, transform=ax1.transAxes, 
+                 fontsize=12, ha='center', va='center',
+                 bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'))
+        
+        ax1.legend(loc='upper center', fontsize=12)
+        
+        # Calculate the number of datapoints used to create the profile
+        n_datapoints = len(self.parameters["profile"])
+        ax1.text(0.98, 0.98, f"n = {n_datapoints:,} data points", 
+                transform=ax1.transAxes, ha='right', va='top',
+                bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.3'))
         
         # Plot length effect if available
         if "length_effect" in self.parameters and self.parameters["length_effect"]:
@@ -934,42 +1050,91 @@ class CoverageBiasModel:
             groups = list(length_effect.keys())
             values = [length_effect[g] for g in groups]
             
-            # Bar plot for length effect
+            # Bar plot for length effect - increase spacing between bars
             bar_positions = np.arange(len(groups))
-            bars = ax2.bar(bar_positions, values, color='steelblue')
+            # Use a color gradient to indicate shorter to longer transcripts
+            colors = plt.cm.viridis(np.linspace(0, 1, len(groups)))
+            bar_width = 0.7  # Reduced width for more space between bars
+            bars = ax2.bar(bar_positions, values, width=bar_width, color=colors)
             ax2.set_xticks(bar_positions)
             
-            # Create more informative x-tick labels from bin names
-            readable_labels = []
-            for g in groups:
-                if g.startswith('bin_'):
-                    bin_num = int(g.replace('bin_', ''))
-                    # Show bin numbers as transcript length groups
-                    readable_labels.append(f"Group {bin_num}")
+            # Create more informative x-tick labels showing length groups
+            try:
+                # Try to get actual length ranges if they were stored during model creation
+                if hasattr(self, 'length_bins') and isinstance(self.length_bins, list) and len(self.length_bins) > 1:
+                    length_ranges = []
+                    for i in range(len(self.length_bins) - 1):
+                        if i == len(self.length_bins) - 2:  # Last bin
+                            length_ranges.append(f"{int(self.length_bins[i])}-{int(self.length_bins[i+1])} nt")
+                        else:
+                            length_ranges.append(f"{int(self.length_bins[i])}-{int(self.length_bins[i+1])} nt")
+                    readable_labels = length_ranges
                 else:
-                    readable_labels.append(g)
+                    # Fall back to generic labels with transcript length information
+                    readable_labels = []
+                    for i, g in enumerate(groups):
+                        if g.startswith('bin_'):
+                            bin_num = int(g.replace('bin_', ''))
+                            if bin_num == 1:
+                                readable_labels.append(f"Shortest\nbin {bin_num}")
+                            elif bin_num == len(groups):
+                                readable_labels.append(f"Longest\nbin {bin_num}")
+                            else:
+                                readable_labels.append(f"Group {bin_num}\n↑ length ↑")
+                        else:
+                            readable_labels.append(g)
+            except Exception as e:
+                # Fall back to simplest labels
+                readable_labels = [f"Group {i+1}" for i in range(len(groups))]
             
-            ax2.set_xticklabels(readable_labels, rotation=45)
-            ax2.set_xlabel("Transcript length group", fontsize=12)
-            ax2.set_ylabel("Length effect strength", fontsize=12)
-            ax2.set_title("Effect of transcript length on coverage bias", fontsize=14)
+            # Increase spacing between xtick labels
+            ax2.set_xticklabels(readable_labels, rotation=45, ha='center', fontsize=12)
+            ax2.set_xlabel("Transcript length groups (shorter → longer)", fontsize=14)
+            ax2.set_ylabel("Length effect strength", fontsize=14)
+            ax2.set_title("Effect of transcript length on coverage bias", fontsize=16)
             ax2.grid(True, alpha=0.3)
+            ax2.tick_params(axis='both', which='major', labelsize=12)
             
             # Add horizontal line at y=1 (no effect)
-            ax2.axhline(y=1, color='r', linestyle='--', alpha=0.7, label="No effect")
-            ax2.legend()
+            ax2.axhline(y=1, color='r', linestyle='--', alpha=0.7, linewidth=2, label="No length effect")
             
-            # Add value labels on top of bars
+            # Add interpretation explanation
+            if np.mean(values) > 1:
+                effect_explanation = "Values > 1: Stronger bias for longer transcripts"
+            else:
+                effect_explanation = "Values < 1: Stronger bias for shorter transcripts"
+                
+            ax2.text(0.5, 0.95, effect_explanation, transform=ax2.transAxes, 
+                    fontsize=12, ha='center', va='center',
+                    bbox=dict(facecolor='lightyellow', alpha=0.9, edgecolor='orange', boxstyle='round,pad=0.5'))
+            
+            ax2.legend(fontsize=12)
+            
+            # Add value labels on top of bars - move up slightly for more space
             for bar in bars:
                 height = bar.get_height()
-                ax2.text(bar.get_x() + bar.get_width()/2., height + 0.05,
-                        f'{height:.2f}', ha='center', va='bottom', fontsize=10)
+                ax2.text(bar.get_x() + bar.get_width()/2., height + 0.08,
+                        f'{height:.2f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
+                        
+            # Add gradient color legend for transcript length - move to right for more space
+            gradient_ax = fig.add_axes([0.94, 0.4, 0.01, 0.2])
+            gradient = np.linspace(0, 1, 100).reshape(-1, 1)
+            gradient_ax.imshow(gradient, aspect='auto', cmap=plt.cm.viridis)
+            gradient_ax.set_xticks([])
+            gradient_ax.set_yticks([0, 99])
+            gradient_ax.set_yticklabels(['Shorter', 'Longer'], fontsize=12)
+            gradient_ax.set_title('Transcript\nLength', fontsize=12)
+            
+            # Ensure y-axis has enough room for labels
+            y_max = max(values) * 1.2
+            ax2.set_ylim(0, y_max)
         
         # Add informative title and explanation
         model_desc = {
             "10x_cdna": "10x Chromium cDNA (typically 3' biased)",
             "direct_rna": "Direct RNA sequencing (typically 5' biased)",
-            "custom": "Custom coverage model learned from data"
+            "custom": "Custom coverage model learned from data",
+            "random_forest": "Random forest ML model"
         }.get(self.model_type, self.model_type)
         
         # Add badge to indicate if it's a default or custom model
@@ -977,23 +1142,30 @@ class CoverageBiasModel:
         model_status = "DEFAULT MODEL" if is_default else "CUSTOM MODEL"
         status_color = "orange" if is_default else "green"
         
-        fig.suptitle(f"Coverage Bias Model: {model_desc}", fontsize=16)
+        fig.suptitle(f"Coverage Bias Model: {model_desc}", fontsize=18, fontweight='bold', y=0.98)
         
         # Add a badge showing if it's a default or custom model
         fig.text(0.01, 0.97, model_status, 
-                fontsize=10, ha='left', va='top', weight='bold',
-                bbox=dict(facecolor=status_color, alpha=0.7, boxstyle='round,pad=0.5'))
+                fontsize=12, ha='left', va='top', weight='bold', color='white',
+                bbox=dict(facecolor=status_color, alpha=0.9, boxstyle='round,pad=0.5'))
         
-        # Add an explanatory text box at the bottom
+        # Add an explanatory text box at the bottom - increase padding and spacing
         explanation = (
-            "EXPLANATION: This plot shows how read coverage varies across transcript length.\n"
-            "LEFT: Values >1 indicate over-representation, <1 indicate under-representation at that position.\n"
-            "RIGHT: How transcript length affects the strength of the coverage bias."
+            "EXPLANATION:\n"
+            "LEFT PLOT: Shows coverage bias across transcript length - how likely a read is to cover different regions.\n"
+            "• Values >1 indicate over-representation (more reads) at that position\n"
+            "• Values <1 indicate under-representation (fewer reads) at that position\n\n"
+            "RIGHT PLOT: Shows how transcript length affects coverage bias strength.\n"
+            "• Each bar represents a group of transcripts with increasing length (left to right)\n"
+            "• Higher values indicate stronger bias effects for that length group"
         )
-        fig.text(0.5, 0.01, explanation, ha='center', va='bottom', fontsize=11,
-                bbox=dict(facecolor='lightyellow', alpha=0.9, boxstyle='round,pad=0.5'))
+        fig.text(0.5, 0.02, explanation, ha='center', va='bottom', fontsize=12,
+                bbox=dict(facecolor='lightyellow', alpha=0.9, boxstyle='round,pad=0.8', edgecolor='orange'),
+                linespacing=1.8)  # Increased line spacing
         
-        plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+        # Adjust layout with more space
+        plt.tight_layout(rect=[0, 0.15, 0.92, 0.95])
+        plt.subplots_adjust(wspace=0.25)  # Add horizontal space between subplots
         
         # Save figure if output file is specified
         if output_file:
@@ -1222,7 +1394,7 @@ def create_coverage_bias_model(
     fastq_file=None,
     bam_file=None,
     annotation_file=None,
-    model_type="10x_cdna",
+    model_type="random_forest",
     sample_size=1000,
     min_reads=100,
     length_bins=5,
@@ -1235,7 +1407,7 @@ def create_coverage_bias_model(
         fastq_file: Path to FASTQ file with reads
         bam_file: Path to BAM file with aligned reads
         annotation_file: Path to GTF/GFF annotation file
-        model_type: Type of model ('10x_cdna', 'direct_rna', or 'custom')
+        model_type: Type of model ('10x_cdna', 'direct_rna', 'custom', 'random_forest')
         sample_size: Number of reads to sample for analysis
         min_reads: Minimum number of reads for a transcript to be included
         length_bins: Number of transcript length bins

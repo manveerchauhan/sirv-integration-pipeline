@@ -244,6 +244,7 @@ if [ -n "${FLAMES_BAM_PATH}" ]; then
         --visualize-coverage \
         --min-reads 50 \
         --length-bins 5 \
+        --run-comparative-analysis \
         --verbose
 else
     # Run pipeline without FLAMES BAM
@@ -257,6 +258,7 @@ else
         --sirv-gtf "${SIRV_DATA_DIR}/auto_generated_reference.gtf" \
         --coverage-model default \
         --visualize-coverage \
+        --run-comparative-analysis \
         --verbose
 fi
 
@@ -271,4 +273,28 @@ else
 fi
 
 echo ""
-echo "Pipeline completed at: $(date)" 
+echo "Pipeline completed at: $(date)"
+
+# Resume SIRV pipeline from existing run
+echo "Resuming SIRV pipeline from existing run"
+
+# Define paths
+EXISTING_RUN="/data/gpfs/projects/punim2251/sirv_run_20250413_190356"
+SIRV_REFERENCE="/data/gpfs/projects/punim2251/sirv-integration-pipeline/test_data/sirv_reference.fa"
+
+# Run the pipeline
+cd /data/gpfs/projects/punim2251/sirv-integration-pipeline
+
+echo "Using fixed flames BAM from: $EXISTING_RUN/fixed_flames.bam"
+echo "Using fixed SIRV BAM from: $EXISTING_RUN/fixed_sirv.bam"
+echo "Using SIRV reference: $SIRV_REFERENCE"
+
+python run_pipeline_fixed.py \
+  --integration \
+  --output-dir "$EXISTING_RUN" \
+  --sirv-bam "$EXISTING_RUN/fixed_sirv.bam" \
+  --learn-coverage-from "$EXISTING_RUN/fixed_flames.bam" \
+  --sirv-reference "$SIRV_REFERENCE" \
+  --verbose
+
+echo "Pipeline resumed successfully!" 

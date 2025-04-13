@@ -116,6 +116,26 @@ def check_dependencies() -> bool:
     return True
 
 
+def is_samtools_available() -> bool:
+    """
+    Check if samtools is available in the system.
+    
+    Returns:
+        bool: True if samtools is available, False otherwise
+    """
+    try:
+        # Try to run a simple samtools command
+        result = subprocess.run(
+            ["samtools", "--version"], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            check=False
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def validate_files(*files, mode='r') -> bool:
     """
     Validate that files exist and have appropriate permissions.

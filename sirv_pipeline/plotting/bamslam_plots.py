@@ -87,13 +87,14 @@ def import_bam_file(bam_file: str, output_dir: str = None, cdna_mode: bool = Tru
                 record['H'] = cigar_stats[5]  # hard clips
                 
                 # Calculate metrics
-                record['aligned_fraction'] = record['aligned_length'] / record['read_length']
-                record['read_coverage'] = (record['end'] - record['start']) / record['transcript_length']
+                record['aligned_fraction'] = record['aligned_length'] / record['read_length'] if record['read_length'] > 0 else 0
+                record['read_coverage'] = (record['end'] - record['start']) / record['transcript_length'] if record['transcript_length'] > 0 else 0
                 
                 # Extract NM tag (edit distance) if available
                 try:
                     record['NM'] = read.get_tag('NM')
-                    record['read_accuracy'] = (record['M'] + record['I'] + record['D'] - record['NM']) / (record['M'] + record['I'] + record['D'])
+                    divisor = (record['M'] + record['I'] + record['D'])
+                    record['read_accuracy'] = (divisor - record['NM']) / divisor if divisor > 0 else 0
                 except KeyError:
                     record['NM'] = np.nan
                     record['read_accuracy'] = np.nan
