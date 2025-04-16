@@ -187,8 +187,8 @@ def prepare_flames_bam(args: argparse.Namespace, state: Dict[str, Any]) -> Optio
     
     # Run fixBAM script
     try:
-        from sirv_pipeline.utils import fix_bam
-        fixed = fix_bam(args.learn_coverage_from, fixed_bam_path, threads=args.threads)
+        from sirv_pipeline.utils import fix_bam_file
+        fixed = fix_bam_file(args.learn_coverage_from, fixed_bam_path, create_index=True)
         
         if not fixed:
             logger.error("Failed to fix FLAMES BAM file")

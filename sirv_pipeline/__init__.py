@@ -11,12 +11,13 @@ Main components:
 """
 
 # Version
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Import main functionality
 from sirv_pipeline.main import run_pipeline, parse_args, setup_logger
 from sirv_pipeline.utils import check_dependencies, validate_files
 from sirv_pipeline.coverage_bias import CoverageBiasModel
+from sirv_pipeline.ml_coverage_model import RandomForestCoverageModel
 from sirv_pipeline.integration import add_sirv_to_dataset
 from sirv_pipeline.evaluation import compare_with_flames, generate_report
 
@@ -28,6 +29,7 @@ __all__ = [
     'check_dependencies',
     'validate_files',
     'CoverageBiasModel',
+    'RandomForestCoverageModel',
     'add_sirv_to_dataset',
     'compare_with_flames',
     'generate_report',
